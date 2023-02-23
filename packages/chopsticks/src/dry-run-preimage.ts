@@ -30,7 +30,7 @@ export const dryRunPreimage = async (argv: Config) => {
         [hash],
         {
           Available: {
-            data: data,
+            data: extrinsic,
             provider: 'bXmPf7DcVmFuHEmzH3UX8t6AUkfNQW8pnTeXGhFhqbfngjAak',
             deposit: '1000000000000',
             since: block.number,
