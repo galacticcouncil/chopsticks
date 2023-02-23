@@ -1,15 +1,15 @@
-import { HexString } from '@polkadot/util/types'
-import { blake2AsHex } from '@polkadot/util-crypto'
-import { hexToU8a } from '@polkadot/util'
+import {HexString} from '@polkadot/util/types'
+import {blake2AsHex} from '@polkadot/util-crypto'
+import {hexToU8a} from '@polkadot/util'
 
-import { Config } from './schema'
-import { defaultLogger } from './logger'
-import { generateHtmlDiffPreviewFile } from './utils/generate-html-diff'
-import { newHeader } from './blockchain/block-builder'
-import { openHtml } from './utils/open-html'
-import { runTask, taskHandler } from './executor'
-import { setStorage } from './utils/set-storage'
-import { setup } from './setup'
+import {Config} from './schema'
+import {defaultLogger} from './logger'
+import {generateHtmlDiffPreviewFile} from './utils/generate-html-diff'
+import {newHeader} from './blockchain/block-builder'
+import {openHtml} from './utils/open-html'
+import {runTask, taskHandler} from './executor'
+import {setStorage} from './utils/set-storage'
+import {setup} from './setup'
 
 export const dryRunPreimage = async (argv: Config) => {
   const context = await setup(argv)
@@ -25,19 +25,19 @@ export const dryRunPreimage = async (argv: Config) => {
   const hash = blake2AsHex(data, 256)
 
   await setStorage(context.chain, {
-    Preimage: {
-      PreimageFor: [[[[hash, data.byteLength]], extrinsic]],
-      StatusFor: [
-        [
-          [hash],
-          {
-            Requested: {
-              count: 1,
-              len: data.byteLength,
-            },
-          },
-        ],
-      ],
+    Democracy: {
+      Preimages: [[
+        [hash],
+        {
+          Available: {
+            data: data,
+            provider: 'bXmPf7DcVmFuHEmzH3UX8t6AUkfNQW8pnTeXGhFhqbfngjAak',
+            deposit: '1000000000000',
+            since: block.number,
+            expiry: null
+          }
+        }
+      ]]
     },
     Scheduler: {
       Agenda: [
@@ -47,13 +47,8 @@ export const dryRunPreimage = async (argv: Config) => {
             {
               maybeId: '0x64656d6f637261633a0000000000000000000000000000000000000000000000',
               priority: 63,
-              call: {
-                Lookup: {
-                  hash: hash,
-                  len: data.byteLength,
-                },
-              },
-              origin: { system: { Root: null } },
+              call: {Hash: hash},
+              origin: {system: {Root: null}},
             },
           ],
         ],
@@ -70,7 +65,10 @@ export const dryRunPreimage = async (argv: Config) => {
 
   calls.push(['BlockBuilder_finalize_block', []])
 
-  defaultLogger.info({ preimage: registry.createType('Call', data).toHuman() }, 'Dry run preimage')
+  for (let i = 0; i < 900; i++)
+    await context.chain.newBlock()
+
+  defaultLogger.info({preimage: registry.createType('Call', data).toHuman()}, 'Dry run preimage')
 
   const result = await runTask(
     {
@@ -97,8 +95,8 @@ export const dryRunPreimage = async (argv: Config) => {
   // this is usefull to test something after preimage is applied
   if (argv['extrinsic']) {
     await context.chain.newBlock()
-    const input = argv['address'] ? { call: argv['extrinsic'], address: argv['address'] } : argv['extrinsic']
-    const { outcome, storageDiff } = await context.chain.dryRunExtrinsic(input)
+    const input = argv['address'] ? {call: argv['extrinsic'], address: argv['address']} : argv['extrinsic']
+    const {outcome, storageDiff} = await context.chain.dryRunExtrinsic(input)
     if (outcome.isErr) {
       throw new Error(outcome.asErr.toString())
     } else {

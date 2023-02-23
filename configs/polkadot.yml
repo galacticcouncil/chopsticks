@@ -1,8 +1,8 @@
-endpoint: wss://hydradx-rpc.dwellir.com
+endpoint: wss://rpc.dotters.network/polkadot
 mock-signature-host: true
-#block: 1872160
+#block: 15616800
+#timestamp: 1670190990039
 db: ./db.sqlite
-wasm-override: ./hydradx_runtime.compact.compressed.wasm
 
 import-storage:
   System:
@@ -11,15 +11,10 @@ import-storage:
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
         - data:
-            free: 1000000000000000
-  Tokens:
-    Accounts:
-      -
-        -
-          - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-          - 2
-        - free: '100000000000000000000'
+            free: '10000000000000000000'
   Council:
     Members: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY]
   TechnicalCommittee:
+    Members: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY]
+  TechnicalMembership:
     Members: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY]

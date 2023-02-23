@@ -1,8 +1,8 @@
-endpoint: wss://hydradx-rpc.dwellir.com
+endpoint: wss://basilisk-rpc.dwellir.com
 mock-signature-host: true
-#block: 1872160
+#block: 2734198
 db: ./db.sqlite
-wasm-override: ./hydradx_runtime.compact.compressed.wasm
+wasm-override: ./basilisk_runtime.compact.compressed.wasm
 
 import-storage:
   System:
