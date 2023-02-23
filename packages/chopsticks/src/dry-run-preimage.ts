@@ -65,9 +65,6 @@ export const dryRunPreimage = async (argv: Config) => {
 
   calls.push(['BlockBuilder_finalize_block', []])
 
-  for (let i = 0; i < 900; i++)
-    await context.chain.newBlock()
-
   defaultLogger.info({preimage: registry.createType('Call', data).toHuman()}, 'Dry run preimage')
 
   const result = await runTask(
