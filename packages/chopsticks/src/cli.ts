@@ -20,7 +20,7 @@ import { tryRuntime } from './try-runtime'
 
 dotenv.config()
 
-const CONFIGS_BASE_URL = 'https://raw.githubusercontent.com/AcalaNetwork/chopsticks/master/configs/'
+const CONFIGS_BASE_URL = 'https://raw.githubusercontent.com/galacticcouncil/chopsticks/master/configs/'
 
 const processConfig = async (path: string) => {
   let file: string
