@@ -1,7 +1,10 @@
 import { HexString } from '@polkadot/util/types'
+import { basename, extname } from 'node:path'
 import { hideBin } from 'yargs/helpers'
 import { readFileSync } from 'node:fs'
+import _ from 'lodash'
 import axios from 'axios'
+import dotenv from 'dotenv'
 import yaml from 'js-yaml'
 import yargs from 'yargs'
 
@@ -11,23 +14,43 @@ import { decodeKey } from './utils/decoder'
 import { dryRun } from './dry-run'
 import { dryRunPreimage } from './dry-run-preimage'
 import { isUrl } from './utils'
+import { logger } from './rpc/shared'
 import { runBlock } from './run-block'
+import { tryRuntime } from './try-runtime'
+
+dotenv.config()
+
+const CONFIGS_BASE_URL = 'https://raw.githubusercontent.com/AcalaNetwork/chopsticks/master/configs/'
 
 const processConfig = async (path: string) => {
-  let file
+  let file: string
   if (isUrl(path)) {
     file = await axios.get(path).then((x) => x.data)
   } else {
-    file = readFileSync(path, 'utf8')
+    try {
+      file = readFileSync(path, 'utf8')
+    } catch (err) {
+      if (basename(path) === path && ['', '.yml', '.yaml', '.json'].includes(extname(path))) {
+        if (extname(path) === '') {
+          path += '.yml'
+        }
+        const url = CONFIGS_BASE_URL + path
+        logger.info(`Loading config file ${url}`)
+        file = await axios.get(url).then((x) => x.data)
+      } else {
+        throw err
+      }
+    }
   }
-  const config = yaml.load(file) as any
+  const config = yaml.load(_.template(file, { variable: 'env' })(process.env)) as any
   return configSchema.parse(config)
 }
 
 const processArgv = async (argv: any) => {
   if (argv.config) {
-    return { ...(await processConfig(argv.config)), ...argv }
+    argv = { ...(await processConfig(argv.config)), ...argv }
   }
+  argv.port = argv.port ?? (process.env.PORT ? Number(process.env.PORT) : 8000)
   return argv
 }
 
@@ -38,6 +61,7 @@ const defaultOptions = {
   },
   block: {
     desc: 'Block hash or block number. Default to latest block',
+    string: true,
   },
   'wasm-override': {
     desc: 'Path to wasm override',
@@ -51,20 +75,56 @@ const defaultOptions = {
     desc: 'Path to config file',
     string: true,
   },
+  'runtime-log-level': {
+    desc: 'Runtime maximum log level [off = 0; error = 1; warn = 2; info = 3; debug = 4; trace = 5]',
+    number: true,
+  },
+}
+
+const mockOptions = {
+  'import-storage': {
+    desc: 'Pre-defined JSON/YAML storage file path',
+    string: true,
+  },
+  'mock-signature-host': {
+    desc: 'Mock signature host so any signature starts with 0xdeadbeef and filled by 0xcd is considered valid',
+    boolean: true,
+  },
 }
 
 yargs(hideBin(process.argv))
   .scriptName('chopsticks')
+  .command(
+    '*',
+    'Dev mode, fork off a chain',
+    (yargs) =>
+      yargs.options({
+        ...defaultOptions,
+        ...mockOptions,
+        port: {
+          desc: 'Port to listen on',
+          number: true,
+        },
+        'build-block-mode': {
+          desc: 'Build block mode. Default to Batch',
+          enum: [BuildBlockMode.Batch, BuildBlockMode.Manual, BuildBlockMode.Instant],
+        },
+        'allow-unresolved-imports': {
+          desc: 'Allow wasm unresolved imports',
+          boolean: true,
+        },
+      }),
+    async (argv) => {
+      await setupWithServer(await processArgv(argv))
+    }
+  )
   .command(
     'run-block',
     'Replay a block',
     (yargs) =>
       yargs.options({
         ...defaultOptions,
-        port: {
-          desc: 'Port to listen on',
-          number: true,
-        },
+        ...mockOptions,
         'output-path': {
           desc: 'File path to print output',
           string: true,
@@ -78,6 +138,32 @@ yargs(hideBin(process.argv))
       }),
     async (argv) => {
       await runBlock(await processArgv(argv))
+    }
+  )
+  .command(
+    'try-runtime',
+    'Runs runtime upgrade',
+    (yargs) =>
+      yargs.options({
+        ...defaultOptions,
+        'wasm-override': {
+          desc: 'Path to WASM built with feature `try-runtime` enabled',
+          string: true,
+          required: true,
+        },
+        'output-path': {
+          desc: 'File path to print output',
+          string: true,
+        },
+        html: {
+          desc: 'Generate html with storage diff',
+        },
+        open: {
+          desc: 'Open generated html',
+        },
+      }),
+    async (argv) => {
+      await tryRuntime(await processArgv(argv))
     }
   )
   .command(
@@ -123,37 +209,6 @@ yargs(hideBin(process.argv))
     }
   )
   .command(
-    'dev',
-    'Dev mode',
-    (yargs) =>
-      yargs.options({
-        ...defaultOptions,
-        port: {
-          desc: 'Port to listen on',
-          number: true,
-        },
-        'build-block-mode': {
-          desc: 'Build block mode. Default to Batch',
-          enum: [BuildBlockMode.Batch, BuildBlockMode.Manual, BuildBlockMode.Instant],
-        },
-        'import-storage': {
-          desc: 'Pre-defined JSON/YAML storage file path',
-          string: true,
-        },
-        'mock-signature-host': {
-          desc: 'Mock signature host so any signature starts with 0xdeadbeef and filled by 0xcd is considered valid',
-          boolean: true,
-        },
-        'allow-unresolved-imports': {
-          desc: 'Allow wasm unresolved imports',
-          boolean: true,
-        },
-      }),
-    async (argv) => {
-      await setupWithServer(await processArgv(argv))
-    }
-  )
-  .command(
     'decode-key <key>',
     'Deocde a key',
     (yargs) =>
@@ -167,7 +222,11 @@ yargs(hideBin(process.argv))
         }),
     async (argv) => {
       const context = await setup(await processArgv(argv))
-      const { storage, decodedKey } = await decodeKey(context.chain.head, argv.key as HexString)
+      const { storage, decodedKey } = decodeKey(
+        await context.chain.head.meta,
+        context.chain.head,
+        argv.key as HexString
+      )
       if (storage && decodedKey) {
         console.log(
           `${storage.section}.${storage.method}`,
@@ -183,18 +242,21 @@ yargs(hideBin(process.argv))
     'xcm',
     'XCM setup with relaychain and parachains',
     (yargs) =>
-      yargs.options({
-        relaychain: {
-          desc: 'Relaychain config file path',
-          string: true,
-        },
-        parachain: {
-          desc: 'Parachain config file path',
-          type: 'array',
-          string: true,
-          required: true,
-        },
-      }),
+      yargs
+        .options({
+          relaychain: {
+            desc: 'Relaychain config file path',
+            string: true,
+          },
+          parachain: {
+            desc: 'Parachain config file path',
+            type: 'array',
+            string: true,
+            required: true,
+          },
+        })
+        .alias('relaychain', 'r')
+        .alias('parachain', 'p'),
     async (argv) => {
       const parachains: Blockchain[] = []
       for (const config of argv.parachain) {
@@ -216,4 +278,13 @@ yargs(hideBin(process.argv))
   )
   .strict()
   .help()
-  .alias('help', 'h').argv
+  .alias('help', 'h')
+  .alias('version', 'v')
+  .alias('config', 'c')
+  .alias('endpoint', 'e')
+  .alias('port', 'p')
+  .alias('block', 'b')
+  .alias('import-storage', 's')
+  .alias('wasm-override', 'w')
+  .usage('Usage: $0 <command> [options]')
+  .example('$0', '-c acala').argv

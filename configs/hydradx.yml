@@ -1,8 +1,8 @@
 endpoint: wss://hydradx-rpc.dwellir.com
 mock-signature-host: true
-#block: 1872160
+block: ${env.HYDRADX_BLOCK_NUMBER}
 db: ./db.sqlite
-wasm-override: ./hydradx_runtime.compact.compressed.wasm
+# wasm-override: hydradx_runtime.compact.compressed.wasm
 
 import-storage:
   System:
@@ -10,7 +10,8 @@ import-storage:
       -
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-        - data:
+        - providers: 1
+          data:
             free: 1000000000000000
   Tokens:
     Accounts:

@@ -2,13 +2,14 @@ import { HexString } from '@polkadot/util/types'
 import { writeFileSync } from 'node:fs'
 
 import { Config } from './schema'
+import { defaultLogger } from './logger'
 import { generateHtmlDiffPreviewFile } from './utils/generate-html-diff'
 import { openHtml } from './utils/open-html'
 import { runTask, taskHandler } from './executor'
 import { setup } from './setup'
 
 export const runBlock = async (argv: Config) => {
-  const context = await setup(argv)
+  const context = await setup(argv, true)
 
   const header = await context.chain.head.header
   const wasm = await context.chain.head.wasm
@@ -31,12 +32,17 @@ export const runBlock = async (argv: Config) => {
       storage: [],
       mockSignatureHost: false,
       allowUnresolvedImports: false,
+      runtimeLogLevel: argv['runtime-log-level'] || 0,
     },
     taskHandler(parent)
   )
 
   if (result.Error) {
     throw new Error(result.Error)
+  }
+
+  for (const logs of result.Call.runtimeLogs) {
+    defaultLogger.info(`RuntimeLogs:\n${logs}`)
   }
 
   if (argv['html']) {

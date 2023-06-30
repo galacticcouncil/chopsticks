@@ -1,6 +1,6 @@
-endpoint: wss://mandala-rpc.aca-staging.network/ws
+endpoint: wss://mandala-tc9-rpc.aca-staging.network
 mock-signature-host: true
-block: 457700
+block: ${env.MANDALA_BLOCK_NUMBER}
 db: ./db.sqlite
 # wasm-override: acala-2101.wasm
 
@@ -12,7 +12,8 @@ import-storage:
       -
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-        - data:
+        - providers: 1
+          data:
             free: 1000000000000000
   Tokens:
     Accounts:

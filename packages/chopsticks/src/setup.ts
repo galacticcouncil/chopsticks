@@ -21,7 +21,7 @@ import { importStorage, overrideWasm } from './utils/import-storage'
 import { openDb } from './db'
 import { timeTravel } from './utils/time-travel'
 
-export const setup = async (argv: Config) => {
+export const setup = async (argv: Config, runBlock = false) => {
   let provider: ProviderInterface
   if (argv.genesis) {
     if (typeof argv.genesis === 'string') {
@@ -38,10 +38,12 @@ export const setup = async (argv: Config) => {
   let blockHash: string
   if (argv.block == null) {
     blockHash = await api.getBlockHash()
+  } else if (typeof argv.block === 'string' && argv.block.startsWith('0x')) {
+    blockHash = argv.block as string
   } else if (Number.isInteger(+argv.block)) {
     blockHash = await api.getBlockHash(Number(argv.block))
   } else {
-    blockHash = argv.block as string
+    throw new Error(`Invalid block number or hash: ${argv.block}`)
   }
 
   defaultLogger.debug({ ...argv, blockHash }, 'Args')
@@ -71,15 +73,24 @@ export const setup = async (argv: Config) => {
     },
     mockSignatureHost: argv['mock-signature-host'],
     allowUnresolvedImports: argv['allow-unresolved-imports'],
+    runtimeLogLevel: argv['runtime-log-level'],
     registeredTypes: argv['registered-types'],
   })
 
   if (argv.timestamp) await timeTravel(chain, argv.timestamp)
 
+  let at: HexString | undefined
+  if (runBlock) {
+    // in case of run block we need to apply wasm-override and import-storage to parent block
+    const block = await chain.head.parentBlock
+    if (!block) throw new Error('Cannot find parent block')
+    at = block.hash
+  }
+
   // override wasm before importing storage, in case new pallets have been
   // added that have storage imports
-  await overrideWasm(chain, argv['wasm-override'])
-  await importStorage(chain, argv['import-storage'])
+  await overrideWasm(chain, argv['wasm-override'], at)
+  await importStorage(chain, argv['import-storage'], at)
 
   return { chain, api, ws: provider }
 }

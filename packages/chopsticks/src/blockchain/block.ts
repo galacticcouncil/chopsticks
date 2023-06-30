@@ -10,12 +10,14 @@ import type { HexString } from '@polkadot/util/types'
 import { Blockchain } from '.'
 import { RemoteStorageLayer, StorageLayer, StorageLayerProvider, StorageValue, StorageValueKind } from './storage-layer'
 import { compactHex } from '../utils'
+import { defaultLogger } from '../logger'
 import { getRuntimeVersion, runTask, taskHandler } from '../executor'
 import type { RuntimeVersion } from '../executor'
 
 export type TaskCallResponse = {
   result: HexString
   storageDiff: [HexString, HexString | null][]
+  runtimeLogs: string[]
 }
 
 export class Block {
@@ -53,17 +55,19 @@ export class Block {
     this.#baseStorage = block?.storage ?? new RemoteStorageLayer(chain.api, hash, chain.db)
     this.#storages = []
 
-    const storageDiff = block?.storageDiff || {}
+    const storageDiff = block?.storageDiff
 
-    // if code doesn't change then reuse parent block's meta
-    if (!storageDiff[stringToHex(':code')]) {
-      this.#runtimeVersion = parentBlock?.runtimeVersion
-      this.#metadata = parentBlock?.metadata
-      this.#registry = parentBlock?.registry
-      this.#meta = parentBlock?.meta
+    if (storageDiff) {
+      // if code doesn't change then reuse parent block's meta
+      if (!storageDiff?.[stringToHex(':code')]) {
+        this.#runtimeVersion = parentBlock?.runtimeVersion
+        this.#metadata = parentBlock?.metadata
+        this.#registry = parentBlock?.registry
+        this.#meta = parentBlock?.meta
+      }
+
+      this.pushStorageLayer().setAll(storageDiff)
     }
-
-    this.pushStorageLayer().setAll(storageDiff)
   }
 
   get chain(): Blockchain {
@@ -231,10 +235,16 @@ export class Block {
         storage,
         mockSignatureHost: this.#chain.mockSignatureHost,
         allowUnresolvedImports: this.#chain.allowUnresolvedImports,
+        runtimeLogLevel: this.#chain.runtimeLogLevel,
       },
       taskHandler(this)
     )
-    if (response.Call) return response.Call
+    if (response.Call) {
+      for (const log of response.Call.runtimeLogs) {
+        defaultLogger.info(`RuntimeLogs:\n${log}`)
+      }
+      return response.Call
+    }
     if (response.Error) throw Error(response.Error)
     throw Error('Unexpected response')
   }

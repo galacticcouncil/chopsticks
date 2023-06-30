@@ -1,19 +1,21 @@
 {
+	"name": "chopsticks-monorepo",
 	"author": "Bryan Chen <xlchen1291@gmail.com>",
 	"license": "Apache-2.0",
-	"packageManager": "yarn@3.2.4",
+	"packageManager": "yarn@3.5.0",
+	"private": true,
 	"workspaces": [
 		"packages/*",
-		"executor/pkg",
-		"e2e"
+		"executor/pkg"
 	],
 	"scripts": {
-		"lint": "yarn workspaces foreach run lint",
-		"fix": "yarn workspaces foreach run fix",
+		"lint": "tsc --noEmit --project tsconfig.json && eslint . --ext .js,.ts && prettier --check .",
+		"fix": "eslint . --ext .js,.ts --fix && prettier -w .",
 		"prepare": "husky install",
-		"build": "yarn workspaces foreach run build",
-		"build-wasm": "wasm-pack build executor --target nodejs --scope acala-network",
-		"build-wasm-logging": "yarn build-wasm --features=logging",
+		"clean": "yarn workspaces foreach -pvit run clean",
+		"build": "yarn workspaces foreach -pvit run build",
+		"build-wasm": "wasm-pack build executor --target nodejs --scope acala-network && echo '' >> executor/pkg/package.json",
+		"build-wasm-logging": "wasm-pack build executor --target nodejs --scope acala-network --features=logging",
 		"check": "cd executor && cargo check --locked",
 		"test": "vitest run",
 		"test:watch": "vitest",
@@ -33,8 +35,27 @@
 		"*.{js,ts,css,md}": "prettier --write"
 	},
 	"devDependencies": {
+		"@swc/core": "^1.3.66",
+		"@types/node": "^20.3.1",
+		"@types/prettier": "^2.7.3",
+		"@typescript-eslint/eslint-plugin": "^5.60.0",
+		"@typescript-eslint/parser": "^5.60.0",
+		"eslint": "^8.43.0",
+		"eslint-config-prettier": "^8.8.0",
+		"eslint-import-resolver-typescript": "^3.5.5",
+		"eslint-plugin-import": "^2.27.5",
+		"eslint-plugin-sort-imports-es6-autofix": "^0.6.0",
 		"husky": "^8.0.3",
-		"vitest": "^0.28.5",
-		"wasm-pack": "^0.10.3"
+		"prettier": "^2.8.8",
+		"typescript": "^5.1.3",
+		"unplugin-swc": "^1.3.2",
+		"vite-tsconfig-paths": "^4.2.0",
+		"vitest": "^0.32.2",
+		"wasm-pack": "^0.12.0"
+	},
+	"exports": {
+		".": "./lib/index.js",
+		"./*": "./lib/*.js",
+		"./package.json": "./package.json"
 	}
 }

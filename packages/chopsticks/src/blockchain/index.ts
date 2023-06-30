@@ -8,9 +8,11 @@ import type { TransactionValidity } from '@polkadot/types/interfaces/txqueue'
 
 import { Api } from '../api'
 import { Block } from './block'
-import { BuildBlockMode, BuildBlockParams, HorizontalMessage, TxPool } from './txpool'
+import { BuildBlockMode, BuildBlockParams, DownwardMessage, HorizontalMessage, TxPool } from './txpool'
 import { HeadState } from './head-state'
 import { InherentProvider } from './inherent'
+import { StorageValue } from './storage-layer'
+import { compactHex } from '../utils'
 import { defaultLogger } from '../logger'
 import { dryRunExtrinsic, dryRunInherents } from './block-builder'
 
@@ -24,6 +26,7 @@ export interface Options {
   header: { number: number; hash: HexString }
   mockSignatureHost?: boolean
   allowUnresolvedImports?: boolean
+  runtimeLogLevel?: number
   registeredTypes: RegisteredTypes
 }
 
@@ -33,6 +36,7 @@ export class Blockchain {
   readonly db: DataSource | undefined
   readonly mockSignatureHost: boolean
   readonly allowUnresolvedImports: boolean
+  readonly runtimeLogLevel: number
   readonly registeredTypes: RegisteredTypes
 
   readonly #txpool: TxPool
@@ -53,12 +57,14 @@ export class Blockchain {
     header,
     mockSignatureHost = false,
     allowUnresolvedImports = false,
+    runtimeLogLevel = 0,
     registeredTypes = {},
   }: Options) {
     this.api = api
     this.db = db
     this.mockSignatureHost = mockSignatureHost
     this.allowUnresolvedImports = allowUnresolvedImports
+    this.runtimeLogLevel = runtimeLogLevel
     this.registeredTypes = registeredTypes
 
     this.#head = new Block(this, header.number, header.hash)
@@ -155,19 +161,42 @@ export class Blockchain {
     const registry = await this.head.registry
     const validity: TransactionValidity = registry.createType('TransactionValidity', res.result)
     if (validity.isOk) {
-      this.#txpool.submitExtrinsic(extrinsic)
+      await this.#txpool.submitExtrinsic(extrinsic)
       return blake2AsHex(extrinsic, 256)
     }
     throw validity.asErr
   }
 
-  async newBlock(params?: BuildBlockParams): Promise<Block> {
+  submitUpwardMessages(id: number, ump: HexString[]) {
+    this.#txpool.submitUpwardMessages(id, ump)
+
+    logger.debug({ id, ump }, 'submitUpwardMessages')
+  }
+
+  submitDownwardMessages(dmp: DownwardMessage[]) {
+    this.#txpool.submitDownwardMessages(dmp)
+
+    logger.debug({ dmp }, 'submitDownwardMessages')
+  }
+
+  submitHorizontalMessages(id: number, hrmp: HorizontalMessage[]) {
+    this.#txpool.submitHorizontalMessages(id, hrmp)
+
+    logger.debug({ id, hrmp }, 'submitHorizontalMessages')
+  }
+
+  async newBlock(params?: Partial<BuildBlockParams>): Promise<Block> {
     await this.#txpool.buildBlock(params)
     return this.#head
   }
 
-  async upcomingBlock(skipCount = 0) {
-    return this.#txpool.upcomingBlock(skipCount)
+  async newBlockWithParams(params: BuildBlockParams): Promise<Block> {
+    await this.#txpool.buildBlockWithParams(params)
+    return this.#head
+  }
+
+  async upcomingBlocks() {
+    return this.#txpool.upcomingBlocks()
   }
 
   async dryRunExtrinsic(
@@ -180,22 +209,93 @@ export class Blockchain {
       throw new Error(`Cannot find block ${at}`)
     }
     const registry = await head.registry
-    const inherents = await this.#inherentProvider.createInherents(head)
+    const inherents = await this.#inherentProvider.createInherents(head, {
+      transactions: [],
+      downwardMessages: [],
+      upwardMessages: [],
+      horizontalMessages: {},
+    })
     const { result, storageDiff } = await dryRunExtrinsic(head, inherents, extrinsic)
     const outcome = registry.createType<ApplyExtrinsicResult>('ApplyExtrinsicResult', result)
     return { outcome, storageDiff }
   }
 
-  async dryRunHrmp(hrmp: Record<number, HorizontalMessage[]>): Promise<[HexString, HexString | null][]> {
+  async dryRunHrmp(
+    hrmp: Record<number, HorizontalMessage[]>,
+    at?: HexString
+  ): Promise<[HexString, HexString | null][]> {
     await this.api.isReady
-    const head = this.head
-    const inherents = await this.#inherentProvider.createInherents(head, { horizontalMessages: hrmp })
+    const head = at ? await this.getBlock(at) : this.head
+    if (!head) {
+      throw new Error(`Cannot find block ${at}`)
+    }
+    const inherents = await this.#inherentProvider.createInherents(head, {
+      transactions: [],
+      downwardMessages: [],
+      upwardMessages: [],
+      horizontalMessages: hrmp,
+    })
+    return dryRunInherents(head, inherents)
+  }
+  async dryRunDmp(dmp: DownwardMessage[], at?: HexString): Promise<[HexString, HexString | null][]> {
+    await this.api.isReady
+    const head = at ? await this.getBlock(at) : this.head
+    if (!head) {
+      throw new Error(`Cannot find block ${at}`)
+    }
+    const inherents = await this.#inherentProvider.createInherents(head, {
+      transactions: [],
+      downwardMessages: dmp,
+      upwardMessages: [],
+      horizontalMessages: {},
+    })
+    return dryRunInherents(head, inherents)
+  }
+  async dryRunUmp(ump: Record<number, HexString[]>, at?: HexString): Promise<[HexString, HexString | null][]> {
+    await this.api.isReady
+    const head = at ? await this.getBlock(at) : this.head
+    if (!head) {
+      throw new Error(`Cannot find block ${at}`)
+    }
+    const meta = await head.meta
+
+    const needsDispatch = meta.registry.createType('Vec<u32>', Object.keys(ump))
+
+    const stroageValues: [string, StorageValue | null][] = [
+      [compactHex(meta.query.ump.needsDispatch()), needsDispatch.toHex()],
+    ]
+
+    for (const [paraId, messages] of Object.entries(ump)) {
+      const upwardMessages = meta.registry.createType('Vec<Bytes>', messages)
+      if (upwardMessages.length === 0) throw new Error('No upward meesage')
+
+      const queueSize = meta.registry.createType('(u32, u32)', [
+        upwardMessages.length,
+        upwardMessages.map((x) => x.byteLength).reduce((s, i) => s + i, 0),
+      ])
+
+      stroageValues.push([compactHex(meta.query.ump.relayDispatchQueues(paraId)), upwardMessages.toHex()])
+      stroageValues.push([compactHex(meta.query.ump.relayDispatchQueueSize(paraId)), queueSize.toHex()])
+    }
+
+    head.pushStorageLayer().setAll(stroageValues)
+    const inherents = await this.#inherentProvider.createInherents(head, {
+      transactions: [],
+      downwardMessages: [],
+      upwardMessages: [],
+      horizontalMessages: {},
+    })
     return dryRunInherents(head, inherents)
   }
 
   async getInherents(): Promise<HexString[]> {
     await this.api.isReady
-    const inherents = await this.#inherentProvider.createInherents(this.head)
+    const inherents = await this.#inherentProvider.createInherents(this.head, {
+      transactions: [],
+      downwardMessages: [],
+      upwardMessages: [],
+      horizontalMessages: {},
+    })
     return inherents
   }
 }

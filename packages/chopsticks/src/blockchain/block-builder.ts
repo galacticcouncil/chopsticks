@@ -9,9 +9,8 @@ import {
 import { Block, TaskCallResponse } from './block'
 import { GenericExtrinsic } from '@polkadot/types'
 import { HexString } from '@polkadot/util/types'
-import { StorageValueKind } from './storage-layer'
-import { blake2AsHex } from '@polkadot/util-crypto'
-import { compactAddLength, hexToU8a, stringToHex } from '@polkadot/util'
+import { StorageLayer, StorageValueKind } from './storage-layer'
+import { compactAddLength, hexToU8a, stringToHex, u8aConcat } from '@polkadot/util'
 import { compactHex } from '../utils'
 import { defaultLogger, truncate } from '../logger'
 import { getCurrentSlot } from '../utils/time-travel'
@@ -81,8 +80,13 @@ export const newHeader = async (head: Block) => {
         ],
       },
       ...consensus.rest,
-      head.pushStorageLayer().set(compactHex(meta.query.randomness.notFirstBlock()), StorageValueKind.Deleted),
     ]
+
+    if (meta.query.randomness) {
+      // TODO: shouldn't modify existing head
+      // reset notFirstBlock so randomness will skip validation
+      head.pushStorageLayer().set(compactHex(meta.query.randomness.notFirstBlock()), StorageValueKind.Deleted)
+    }
   }
 
   const header = meta.registry.createType<Header>('Header', {
@@ -98,12 +102,16 @@ export const newHeader = async (head: Block) => {
   return header
 }
 
-const initNewBlock = async (head: Block, header: Header, inherents: HexString[]) => {
+const initNewBlock = async (head: Block, header: Header, inherents: HexString[], storageLayer?: StorageLayer) => {
   const blockNumber = header.number.toNumber()
   const hash: HexString = `0x${Math.round(Math.random() * 100000000)
     .toString(16)
     .padEnd(64, '0')}`
-  const newBlock = new Block(head.chain, blockNumber, hash, head, { header, extrinsics: [], storage: head.storage })
+  const newBlock = new Block(head.chain, blockNumber, hash, head, {
+    header,
+    extrinsics: [],
+    storage: storageLayer ?? head.storage,
+  })
 
   {
     // initialize block
@@ -112,11 +120,14 @@ const initNewBlock = async (head: Block, header: Header, inherents: HexString[])
     logger.trace(truncate(storageDiff), 'Initialize block')
   }
 
+  const layers: StorageLayer[] = []
   // apply inherents
   for (const extrinsic of inherents) {
     try {
       const { storageDiff } = await newBlock.call('BlockBuilder_apply_extrinsic', [extrinsic])
-      newBlock.pushStorageLayer().setAll(storageDiff)
+      const layer = newBlock.pushStorageLayer()
+      layer.setAll(storageDiff)
+      layers.push(layer)
       logger.trace(truncate(storageDiff), 'Applied inherent')
     } catch (e) {
       logger.warn('Failed to apply inherents %o %s', e, e)
@@ -124,27 +135,111 @@ const initNewBlock = async (head: Block, header: Header, inherents: HexString[])
     }
   }
 
-  return newBlock
+  return {
+    block: newBlock,
+    layers: layers,
+  }
 }
 
 export const buildBlock = async (
   head: Block,
   inherents: HexString[],
   extrinsics: HexString[],
+  ump: Record<number, HexString[]>,
   onApplyExtrinsicError: (extrinsic: HexString, error: TransactionValidityError) => void
 ): Promise<[Block, HexString[]]> => {
   const registry = await head.registry
   const header = await newHeader(head)
-  const newBlock = await initNewBlock(head, header, inherents)
 
   logger.info(
     {
-      number: newBlock.number,
+      number: head.number + 1,
       extrinsicsCount: extrinsics.length,
-      tempHash: newBlock.hash,
+      umpCount: Object.keys(ump).length,
     },
-    `Try building block #${newBlock.number.toLocaleString()}`
+    `Try building block #${(head.number + 1).toLocaleString()}`
   )
+
+  let layer: StorageLayer | undefined
+  // apply ump via storage override hack
+  if (Object.keys(ump).length > 0) {
+    const meta = await head.meta
+    layer = new StorageLayer(head.storage)
+    for (const [paraId, upwardMessages] of Object.entries(ump)) {
+      const upwardMessagesU8a = upwardMessages.map((x) => hexToU8a(x))
+      const messagesCount = upwardMessages.length
+      const messagesSize = upwardMessagesU8a.map((x) => x.length).reduce((s, i) => s + i, 0)
+
+      if (meta.query.ump) {
+        const queueSize = meta.registry.createType('(u32, u32)', [messagesCount, messagesSize])
+
+        const messages = meta.registry.createType('Vec<Bytes>', upwardMessages)
+
+        // TODO: make sure we append instead of replace
+        layer.setAll([
+          [compactHex(meta.query.ump.relayDispatchQueues(paraId)), messages.toHex()],
+          [compactHex(meta.query.ump.relayDispatchQueueSize(paraId)), queueSize.toHex()],
+        ])
+      } else if (meta.query.messageQueue) {
+        // TODO: make sure we append instead of replace
+        const origin = { ump: { para: paraId } }
+
+        let last = 0
+        let heap = new Uint8Array(0)
+
+        for (const message of upwardMessagesU8a) {
+          const payloadLen = message.length
+          const header = meta.registry.createType('(u32, bool)', [payloadLen, false])
+          last = heap.length
+          heap = u8aConcat(heap, header.toU8a(), message)
+        }
+
+        layer.setAll([
+          [
+            compactHex(meta.query.messageQueue.bookStateFor(origin)),
+            meta.registry
+              .createType('PalletMessageQueueBookState', {
+                begin: 0,
+                end: 1,
+                count: 1,
+                readyNeighbours: { prev: origin, next: origin },
+                messageCount: messagesCount,
+                size_: messagesSize,
+              })
+              .toHex(),
+          ],
+          [
+            compactHex(meta.query.messageQueue.serviceHead(origin)),
+            meta.registry.createType('PolkadotRuntimeParachainsInclusionAggregateMessageOrigin', origin).toHex(),
+          ],
+          [
+            compactHex(meta.query.messageQueue.pages(origin, 0)),
+            meta.registry
+              .createType('PalletMessageQueuePage', {
+                remaining: messagesCount,
+                remaining_size: messagesSize,
+                first_index: 0,
+                first: 0,
+                last,
+                heap: compactAddLength(heap),
+              })
+              .toHex(),
+          ],
+        ])
+      } else {
+        throw new Error('Unknown ump storage')
+      }
+
+      logger.trace({ paraId, upwardMessages: truncate(upwardMessages) }, 'Pushed UMP')
+    }
+
+    if (meta.query.ump) {
+      const needsDispatch = meta.registry.createType('Vec<u32>', Object.keys(ump))
+      layer.set(compactHex(meta.query.ump.needsDispatch()), needsDispatch.toHex())
+    }
+  }
+
+  const { block: newBlock } = await initNewBlock(head, header, inherents, layer)
 
   const pendingExtrinsics: HexString[] = []
   const includedExtrinsic: HexString[] = []
@@ -155,11 +250,7 @@ export const buildBlock = async (
       const { result, storageDiff } = await newBlock.call('BlockBuilder_apply_extrinsic', [extrinsic])
       const outcome = registry.createType<ApplyExtrinsicResult>('ApplyExtrinsicResult', result)
       if (outcome.isErr) {
-        if (outcome.asErr.isInvalid && outcome.asErr.asInvalid.isFuture) {
-          pendingExtrinsics.push(extrinsic)
-        } else {
-          onApplyExtrinsicError(extrinsic, outcome.asErr)
-        }
+        onApplyExtrinsicError(extrinsic, outcome.asErr)
         continue
       }
       newBlock.pushStorageLayer().setAll(storageDiff)
@@ -198,12 +289,13 @@ export const buildBlock = async (
 
   logger.info(
     {
-      hash: finalBlock.hash,
-      extrinsics: includedExtrinsic.map((x) => blake2AsHex(x, 256)),
-      pendingExtrinsics: pendingExtrinsics.length,
       number: newBlock.number,
+      hash: finalBlock.hash,
+      extrinsics: truncate(includedExtrinsic),
+      pendingExtrinsicsCount: pendingExtrinsics.length,
+      ump: truncate(ump),
     },
-    `Block built #${newBlock.number.toLocaleString()} hash ${finalBlock.hash}`
+    'Block built'
   )
 
   return [finalBlock, pendingExtrinsics]
@@ -216,7 +308,7 @@ export const dryRunExtrinsic = async (
 ): Promise<TaskCallResponse> => {
   const registry = await head.registry
   const header = await newHeader(head)
-  const newBlock = await initNewBlock(head, header, inherents)
+  const { block: newBlock } = await initNewBlock(head, header, inherents)
 
   if (typeof extrinsic !== 'string') {
     if (!head.chain.mockSignatureHost) {
@@ -261,6 +353,10 @@ export const dryRunInherents = async (
   inherents: HexString[]
 ): Promise<[HexString, HexString | null][]> => {
   const header = await newHeader(head)
-  const newBlock = await initNewBlock(head, header, inherents)
-  return Object.entries(await newBlock.storageDiff()) as [HexString, HexString | null][]
+  const { layers } = await initNewBlock(head, header, inherents)
+  const stoarge = {}
+  for (const layer of layers) {
+    await layer.mergeInto(stoarge)
+  }
+  return Object.entries(stoarge) as [HexString, HexString | null][]
 }

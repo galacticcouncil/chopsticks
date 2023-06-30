@@ -74,12 +74,17 @@ export const dryRunPreimage = async (argv: Config) => {
       storage: [],
       mockSignatureHost: false,
       allowUnresolvedImports: false,
+      runtimeLogLevel: argv['runtime-log-level'] || 0,
     },
     taskHandler(block)
   )
 
   if (result.Error) {
     throw new Error(result.Error)
+  }
+
+  for (const logs of result.Call.runtimeLogs) {
+    defaultLogger.info(`RuntimeLogs:\n${logs}`)
   }
 
   const filePath = await generateHtmlDiffPreviewFile(block, result.Call.storageDiff, hash)
@@ -96,9 +101,9 @@ export const dryRunPreimage = async (argv: Config) => {
     const {outcome, storageDiff} = await context.chain.dryRunExtrinsic(input)
     if (outcome.isErr) {
       throw new Error(outcome.asErr.toString())
-    } else {
-      defaultLogger.info(outcome.toHuman(), 'dry_run_outcome')
     }
+
+    defaultLogger.info(outcome.toHuman(), 'dry_run_outcome')
 
     const filePath = await generateHtmlDiffPreviewFile(
       context.chain.head,

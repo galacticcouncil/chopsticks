@@ -1,7 +1,6 @@
 endpoint: wss://rococo-rpc.polkadot.io
 mock-signature-host: true
-block: 2581500
-timestamp: 1667088000000
+block: ${env.ROCOCO_BLOCK_NUMBER}
 db: ./db.sqlite
 
 import-storage:
@@ -10,7 +9,8 @@ import-storage:
       -
         -
           - 5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY
-        - data:
+        - providers: 1
+          data:
             free: '10000000000000000000'
   Council:
     Members: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY]

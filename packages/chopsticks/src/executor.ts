@@ -1,31 +1,19 @@
 import { HexString } from '@polkadot/util/types'
-import {
-  compactAddLength,
-  compactToU8a,
-  hexToString,
-  hexToU8a,
-  u8aConcat,
-  u8aConcatStrict,
-  u8aToHex,
-} from '@polkadot/util'
+import { hexToString, hexToU8a } from '@polkadot/util'
 
 import { Block } from './blockchain/block'
-import { Registry } from '@polkadot/types-codec/types'
 import {
+  JsCallback,
   calculate_state_root,
   create_proof,
   decode_proof,
   get_runtime_version,
   run_task,
 } from '@acala-network/chopsticks-executor'
+import { PREFIX_LENGTH } from './utils/key-cache'
+import { Registry } from '@polkadot/types-codec/types'
 import { defaultLogger, truncate } from './logger'
 import _ from 'lodash'
-
-interface JsCallback {
-  getStorage: (key: HexString) => Promise<string | undefined>
-  getPrefixKeys: (key: HexString) => Promise<string[]>
-  getNextKey: (key: HexString) => Promise<string | undefined>
-}
 
 export type RuntimeVersion = {
   specName: string
@@ -48,29 +36,24 @@ export const getRuntimeVersion = async (code: HexString): Promise<RuntimeVersion
   })
 }
 
-export const calculateStateRoot = async (entries: [HexString, HexString][]): Promise<HexString> => {
-  return calculate_state_root(entries)
-}
-
-const nodesAddLength = (nodes: HexString[]): HexString => {
-  const nodesWithLength = nodes.map((x) => compactAddLength(hexToU8a(x)))
-  return u8aToHex(u8aConcatStrict([compactToU8a(nodesWithLength.length), u8aConcat(...nodesWithLength)]))
+// trie_version: 0 for old trie, 1 for new trie
+export const calculateStateRoot = async (
+  entries: [HexString, HexString][],
+  trie_version: number
+): Promise<HexString> => {
+  return calculate_state_root(entries, trie_version)
 }
 
 export const decodeProof = async (trieRootHash: HexString, keys: HexString[], nodes: HexString[]) => {
-  const decoded: [HexString, HexString | null][] = await decode_proof(trieRootHash, keys, nodesAddLength(nodes))
+  const decoded: [HexString, HexString | null][] = await decode_proof(trieRootHash, keys, nodes)
   return decoded.reduce((accum, [key, value]) => {
     accum[key] = value
     return accum
   }, {} as Record<HexString, HexString | null>)
 }
 
-export const createProof = async (
-  trieRootHash: HexString,
-  nodes: HexString[],
-  entries: [HexString, HexString | null][]
-) => {
-  const result = await create_proof(trieRootHash, nodesAddLength(nodes), entries)
+export const createProof = async (nodes: HexString[], entries: [HexString, HexString | null][]) => {
+  const result = await create_proof(nodes, entries)
   return { trieRootHash: result[0] as HexString, nodes: result[1] as HexString[] }
 }
 
@@ -81,6 +64,7 @@ export const runTask = async (
     storage: [HexString, HexString | null][]
     mockSignatureHost: boolean
     allowUnresolvedImports: boolean
+    runtimeLogLevel: number
   },
   callback: JsCallback = emptyTaskHandler
 ) => {
@@ -99,12 +83,17 @@ export const taskHandler = (block: Block): JsCallback => {
     getStorage: async function (key: HexString) {
       return block.get(key)
     },
-    getPrefixKeys: async function (key: HexString) {
-      return block.getKeysPaged({ prefix: key, pageSize: 1000, startKey: key })
+    getStateRoot: async function () {
+      const header = await block.header
+      return header.stateRoot.toHex()
     },
-    getNextKey: async function (key: HexString) {
-      const keys = await block.getKeysPaged({ prefix: '0x', pageSize: 1, startKey: key })
-      return keys[0]
+    getNextKey: async function (prefix: HexString, key: HexString) {
+      const [nextKey] = await block.getKeysPaged({
+        prefix: prefix.length === 2 /** 0x */ ? key.slice(0, PREFIX_LENGTH) : prefix,
+        pageSize: 1,
+        startKey: key,
+      })
+      return nextKey
     },
   }
 }
@@ -113,10 +102,10 @@ export const emptyTaskHandler = {
   getStorage: async function (_key: HexString) {
     throw new Error('Method not implemented')
   },
-  getPrefixKeys: async function (_key: HexString) {
+  getStateRoot: async function () {
     throw new Error('Method not implemented')
   },
-  getNextKey: async function (_key: HexString) {
+  getNextKey: async function (_prefix: HexString, _key: HexString) {
     throw new Error('Method not implemented')
   },
 }
@@ -128,6 +117,7 @@ export const getAuraSlotDuration = _.memoize(async (wasm: HexString, registry: R
     storage: [],
     mockSignatureHost: false,
     allowUnresolvedImports: false,
+    runtimeLogLevel: 0,
   })
 
   if (!result.Call) throw new Error(result.Error)

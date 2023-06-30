@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { HexString } from '@polkadot/util/types'
+import { JsCallback } from '@acala-network/chopsticks-executor'
 import {
   ProviderInterface,
   ProviderInterfaceCallback,
@@ -32,7 +33,8 @@ export class GenesisProvider implements ProviderInterface {
       Object.entries(this.#genesis.genesis.raw.top).reduce((accu, item) => {
         accu.push(item as any)
         return accu
-      }, [] as [HexString, HexString][])
+      }, [] as [HexString, HexString][]),
+      1
     )
 
     this.#eventemitter = new EventEmitter()
@@ -120,17 +122,17 @@ export class GenesisProvider implements ProviderInterface {
     }
   }
 
-  get _jsCallback() {
+  get _jsCallback(): JsCallback {
     const storage = this.#genesis.genesis.raw.top
     return {
       getStorage: async function (key: HexString) {
         return storage[key]
       },
-      getNextKey: async function (_key: HexString) {
-        return '0x'
+      getStateRoot: async function () {
+        return '0x49416764844ff0d8bad851e8abe686dff9dd2de78621180ef8e9f99bb7a480f1'
       },
-      getPrefixKeys: async function (_key: HexString) {
-        return []
+      getNextKey: async function (_prefix: HexString, _key: HexString) {
+        return undefined
       },
     }
   }
@@ -153,6 +155,7 @@ export class GenesisProvider implements ProviderInterface {
             storage: [],
             mockSignatureHost: false,
             allowUnresolvedImports: true,
+            runtimeLogLevel: 0,
           },
           this._jsCallback
         )
