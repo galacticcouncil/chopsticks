@@ -1,4 +1,4 @@
-import { type Context, ResponseError } from '@acala-network/chopsticks-core'
+import { type Context, ResponseError } from '@galacticcouncil/chopsticks-core'
 import { z } from 'zod'
 import { zHash, zHex } from '../../schema/index.js'
 import { decodeStorageDiff } from '../../utils/decoder.js'

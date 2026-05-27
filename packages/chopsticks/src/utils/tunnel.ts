@@ -2,7 +2,7 @@ import { bootstrap } from 'global-agent'
 
 bootstrap()
 
-import { environment } from '@acala-network/chopsticks-core'
+import { environment } from '@galacticcouncil/chopsticks-core'
 import npmConf from '@pnpm/npm-conf'
 
 const npmConfig = npmConf().config

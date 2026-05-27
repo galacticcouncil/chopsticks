@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs'
-import { BuildBlockMode } from '@acala-network/chopsticks-core'
+import { BuildBlockMode } from '@galacticcouncil/chopsticks-core'
 import type { Weight } from '@polkadot/types/interfaces'
 import type { Argv } from 'yargs'
 import { z } from 'zod'

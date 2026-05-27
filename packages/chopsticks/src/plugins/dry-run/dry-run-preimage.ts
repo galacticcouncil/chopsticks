@@ -1,4 +1,4 @@
-import { Block, newHeader, runTask, setStorage, taskHandler } from '@acala-network/chopsticks-core'
+import { Block, newHeader, runTask, setStorage, taskHandler } from '@galacticcouncil/chopsticks-core'
 import { compactAddLength, hexToU8a } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
 import { blake2AsHex } from '@polkadot/util-crypto'

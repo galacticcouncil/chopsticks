@@ -1,4 +1,4 @@
-import { defaultLogger } from '@acala-network/chopsticks-core'
+import { defaultLogger } from '@galacticcouncil/chopsticks-core'
 import { setupContext } from './context.js'
 import { handler } from './rpc/index.js'
 import type { Config } from './schema/index.js'

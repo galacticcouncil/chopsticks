@@ -1,5 +1,5 @@
 import http from 'node:http'
-import { ResponseError, type SubscriptionManager } from '@acala-network/chopsticks-core'
+import { ResponseError, type SubscriptionManager } from '@galacticcouncil/chopsticks-core'
 import { type AddressInfo, WebSocket, WebSocketServer } from 'ws'
 import { z } from 'zod'
 

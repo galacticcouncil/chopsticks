@@ -13,7 +13,7 @@
 		"depcheck": "npx depcheck"
 	},
 	"dependencies": {
-		"@acala-network/chopsticks-core": "workspace:*",
+		"@galacticcouncil/chopsticks-core": "workspace:*",
 		"@polkadot/util": "^14.0.1",
 		"idb": "^8.0.3",
 		"reflect-metadata": "^0.2.2",

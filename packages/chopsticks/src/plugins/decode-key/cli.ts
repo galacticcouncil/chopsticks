@@ -1,4 +1,4 @@
-import { decodeKey } from '@acala-network/chopsticks-core'
+import { decodeKey } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import type { Argv } from 'yargs'
 import { setupContext } from '../../context.js'

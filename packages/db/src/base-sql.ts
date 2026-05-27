@@ -1,4 +1,4 @@
-import type { BlockEntry, Database, KeyValueEntry } from '@acala-network/chopsticks-core'
+import type { BlockEntry, Database, KeyValueEntry } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import type { DataSource } from 'typeorm'
 

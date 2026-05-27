@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { environment, type Handlers } from '@acala-network/chopsticks-core'
+import { environment, type Handlers } from '@galacticcouncil/chopsticks-core'
 import _ from 'lodash'
 import type { Argv } from 'yargs'
 import { defaultLogger } from '../logger.js'

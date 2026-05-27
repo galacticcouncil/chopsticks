@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { basename, extname } from 'node:path'
-import { BuildBlockMode, defaultLogger, genesisSchema, isUrl } from '@acala-network/chopsticks-core'
+import { BuildBlockMode, defaultLogger, genesisSchema, isUrl } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import axios from 'axios'
 import yaml from 'js-yaml'

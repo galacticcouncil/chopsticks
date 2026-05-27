@@ -7,9 +7,9 @@ import {
   fetchConfig,
   type StorageValues,
   setupWithServer,
-} from '@acala-network/chopsticks'
-import type { Config } from '@acala-network/chopsticks/schema/index.js'
-import type { NewBlockParams } from '@acala-network/chopsticks-core/rpc/dev/new-block.js'
+} from '@galacticcouncil/chopsticks'
+import type { Config } from '@galacticcouncil/chopsticks/schema/index.js'
+import type { NewBlockParams } from '@galacticcouncil/chopsticks-core/rpc/dev/new-block.js'
 import { ApiPromise, WsProvider } from '@polkadot/api'
 import type { SubmittableExtrinsic } from '@polkadot/api-base/types'
 import { createTestKeyring, Keyring } from '@polkadot/keyring'

@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs'
-import { pinoLogger } from '@acala-network/chopsticks-core'
+import { pinoLogger } from '@galacticcouncil/chopsticks-core'
 import type { Argv } from 'yargs'
 import { z } from 'zod'
 

@@ -5,7 +5,7 @@ import {
   type Handlers,
   ResponseError,
   type SubscriptionManager,
-} from '@acala-network/chopsticks-core'
+} from '@galacticcouncil/chopsticks-core'
 
 import { getRpcExtensionMethods, loadRpcExtensionMethod } from '../plugins/index.js'
 

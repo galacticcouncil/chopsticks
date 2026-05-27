@@ -2,6 +2,6 @@
 	"name": "@acala-network/chopsticks-node-test",
 	"type": "module",
 	"dependencies": {
-		"@acala-network/chopsticks": "workspace:*"
+		"@galacticcouncil/chopsticks": "workspace:*"
 	}
 }

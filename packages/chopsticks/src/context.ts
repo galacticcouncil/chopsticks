@@ -6,7 +6,7 @@ import {
   isUrl,
   setup,
   timeTravel,
-} from '@acala-network/chopsticks-core'
+} from '@galacticcouncil/chopsticks-core'
 import { SqliteDatabase } from '@acala-network/chopsticks-db'
 import type { HexString } from '@polkadot/util/types'
 import axios from 'axios'

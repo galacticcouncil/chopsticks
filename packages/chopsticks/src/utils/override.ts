@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { type Blockchain, isUrl, type StorageValues, setStorage } from '@acala-network/chopsticks-core'
+import { type Blockchain, isUrl, type StorageValues, setStorage } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import axios from 'axios'
 import yaml from 'js-yaml'

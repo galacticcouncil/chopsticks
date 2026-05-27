@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs'
-import { runTask, taskHandler } from '@acala-network/chopsticks-core'
+import { runTask, taskHandler } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import type { Argv } from 'yargs'
 import { z } from 'zod'

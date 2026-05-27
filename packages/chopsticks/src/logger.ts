@@ -1,6 +1,6 @@
 import _ from 'lodash'
 
-export { defaultLogger, truncate } from '@acala-network/chopsticks-core'
+export { defaultLogger, truncate } from '@galacticcouncil/chopsticks-core'
 
 const showProgress = process.stdout.isTTY && !process.env.CI && !process.env.TEST
 

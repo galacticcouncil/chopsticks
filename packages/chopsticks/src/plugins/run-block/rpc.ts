@@ -6,7 +6,7 @@ import {
   type RuntimeLog,
   runTask,
   taskHandler,
-} from '@acala-network/chopsticks-core'
+} from '@galacticcouncil/chopsticks-core'
 import type { GenericExtrinsic, Vec } from '@polkadot/types'
 import type { EventRecord, Header } from '@polkadot/types/interfaces'
 import { u8aToHex } from '@polkadot/util'

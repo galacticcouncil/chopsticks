@@ -1,4 +1,4 @@
-import { type Blockchain, connectParachains, connectVertical, environment } from '@acala-network/chopsticks-core'
+import { type Blockchain, connectParachains, connectVertical, environment } from '@galacticcouncil/chopsticks-core'
 import { config as dotenvConfig } from 'dotenv'
 import _ from 'lodash'
 import type { MiddlewareFunction } from 'yargs'

@@ -1,4 +1,4 @@
-import { setup } from '@acala-network/chopsticks-core'
+import { setup } from '@galacticcouncil/chopsticks-core'
 import { SqliteDatabase } from '@acala-network/chopsticks-db'
 import { describe, expect, it } from 'vitest'
 

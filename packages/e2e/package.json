@@ -8,8 +8,8 @@
 		"node": ">=v18"
 	},
 	"devDependencies": {
-		"@acala-network/chopsticks": "workspace:*",
 		"@acala-network/chopsticks-testing": "workspace:*",
+		"@galacticcouncil/chopsticks": "workspace:*",
 		"@polkadot-api/observable-client": "^0.13.0",
 		"@polkadot-api/substrate-client": "^0.4.1",
 		"@polkadot-api/ws-provider": "^0.4.0",

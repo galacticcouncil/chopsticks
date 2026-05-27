@@ -1,4 +1,4 @@
-import { Block, type Blockchain, pinoLogger, type RuntimeVersion } from '@acala-network/chopsticks-core'
+import { Block, type Blockchain, pinoLogger, type RuntimeVersion } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import { blake2AsHex } from '@polkadot/util-crypto'
 import _ from 'lodash'

@@ -1,5 +1,5 @@
 import threads from 'node:worker_threads'
-import { Api, defaultLogger } from '@acala-network/chopsticks-core'
+import { Api, defaultLogger } from '@galacticcouncil/chopsticks-core'
 import { SqliteDatabase } from '@acala-network/chopsticks-db'
 import { ApiPromise } from '@polkadot/api'
 import { WsProvider } from '@polkadot/rpc-provider'

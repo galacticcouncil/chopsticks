@@ -1,4 +1,4 @@
-import { type Block, decodeBlockStorageDiff } from '@acala-network/chopsticks-core'
+import { type Block, decodeBlockStorageDiff } from '@galacticcouncil/chopsticks-core'
 import { diff_match_patch } from '@dmsnell/diff-match-patch'
 import type { HexString } from '@polkadot/util/types'
 import { create } from 'jsondiffpatch'
