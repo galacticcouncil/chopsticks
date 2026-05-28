@@ -25,6 +25,7 @@
 		"start": "NODE_OPTIONS='--loader ./loader.js --no-warnings' node packages/chopsticks/src/cli.ts",
 		"script:start": "yarn start",
 		"release": "node scripts/release.mjs",
+		"publish-gc": "sh ./scripts/publish-gc.sh",
 		"docs:prep": "yarn workspaces foreach --all -pvit run docs:prep && cp docs/* docs-src",
 		"docs:dev": "yarn docs:prep && vitepress dev",
 		"docs:build": "yarn docs:prep && vitepress build",
