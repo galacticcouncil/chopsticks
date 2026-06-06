@@ -1,14 +1,18 @@
 import type { HexString } from '@polkadot/util/types'
+import { hexToU8a, u8aToHex } from '@polkadot/util'
+import { parseTransaction } from 'viem'
 
 import type { Handler } from '../shared.js'
 import { ResponseError } from '../shared.js'
 import {
   decodeAccountBasic,
   decodeCallResult,
+  decodeCreateResult,
   decodeU64LE,
   decodeU256LE,
   decodeVec,
   encodeCallParams,
+  encodeCreateParams,
   encodeH160,
   encodeH256,
   resolveBlock,
@@ -87,8 +91,28 @@ export const eth_getStorageAt: Handler<[string, string, string?], string> = asyn
 export const eth_call: Handler<[Record<string, any>, string?], string> = async (context, [txObject, blockTag]) => {
   const block = await resolveBlock(context, blockTag)
 
+  // Contract-creation simulation: `to` missing/null → route to Frontier `create`.
+  // Returns the deployed contract address (uncommon for eth_call, but spec-valid).
   if (!txObject.to) {
-    throw new ResponseError(-32602, 'Missing required field: to')
+    const initCode = txObject.data || txObject.input
+    if (!initCode) {
+      throw new ResponseError(-32602, 'Missing required field: data (init code) for contract creation')
+    }
+    const params = encodeCreateParams({
+      from: txObject.from,
+      data: initCode,
+      value: txObject.value ? BigInt(txObject.value) : undefined,
+      gasLimit: txObject.gas ? BigInt(txObject.gas) : undefined,
+      maxFeePerGas: txObject.maxFeePerGas ? BigInt(txObject.maxFeePerGas) : undefined,
+      accessList: txObject.accessList,
+      estimate: false,
+    })
+    const result = await block.call('EthereumRuntimeRPCApi_create', [params])
+    const decoded = decodeCreateResult(result.result as HexString)
+    if (!decoded.success) {
+      throw new ResponseError(3, `execution reverted (contract creation)`)
+    }
+    return decoded.contractAddress
   }
 
   const params = encodeCallParams({
@@ -121,8 +145,25 @@ export const eth_estimateGas: Handler<[Record<string, any>, string?], string> = 
 ) => {
   const block = await resolveBlock(context, blockTag)
 
+  // Contract-creation gas estimate: `to` missing/null → route to Frontier `create`.
   if (!txObject.to) {
-    throw new ResponseError(-32602, 'Missing required field: to')
+    const initCode = txObject.data || txObject.input
+    if (!initCode) {
+      throw new ResponseError(-32602, 'Missing required field: data (init code) for contract creation')
+    }
+    const params = encodeCreateParams({
+      from: txObject.from,
+      data: initCode,
+      value: txObject.value ? BigInt(txObject.value) : undefined,
+      gasLimit: txObject.gas ? BigInt(txObject.gas) : undefined,
+      estimate: true,
+    })
+    const result = await block.call('EthereumRuntimeRPCApi_create', [params])
+    const decoded = decodeCreateResult(result.result as HexString)
+    if (!decoded.success) {
+      throw new ResponseError(3, `gas estimation failed: contract creation would revert`)
+    }
+    return toEthQuantity(decoded.gasUsed)
   }
 
   const params = encodeCallParams({
@@ -268,4 +309,125 @@ export const net_listening: Handler<[], boolean> = async () => {
  */
 export const net_peerCount: Handler<[], string> = async () => {
   return '0x0'
+}
+
+/**
+ * Submit a raw (RLP-encoded, EVM-signed) Ethereum transaction to the chain.
+ *
+ * Only works on chains that include Frontier's `pallet-ethereum` (e.g.
+ * Hydration, Acala/Karura, Moonbeam). Decodes the raw tx via viem, rebuilds
+ * the Frontier `TransactionV2` SCALE-encoded payload, wraps it in an unsigned
+ * `Ethereum::transact` extrinsic, and pushes it into the txpool. Frontier's
+ * `ValidateUnsigned` verifies the embedded EVM signature.
+ *
+ * Returns the keccak256 hash of the raw transaction (the Ethereum tx hash
+ * the client expects), not the substrate extrinsic hash.
+ */
+export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (context, [rawTx]) => {
+  // 1. Decode the raw RLP Ethereum transaction (legacy / EIP-2930 / EIP-1559).
+  let parsed: ReturnType<typeof parseTransaction>
+  try {
+    parsed = parseTransaction(rawTx)
+  } catch (e: any) {
+    throw new ResponseError(-32602, `Invalid raw transaction: ${e?.message ?? e}`)
+  }
+
+  // 2. Check the chain has pallet-ethereum.
+  const block = context.chain.head
+  const registry = await block.registry
+  const meta = await block.meta
+  const ethereumTx = (meta.tx as any)?.ethereum?.transact
+  if (!ethereumTx) {
+    throw new ResponseError(-32601, 'eth_sendRawTransaction: chain does not expose Ethereum.transact (no pallet-ethereum)')
+  }
+
+  // 3. Build the TransactionV3 enum variant matching the parsed type.
+  //    V3 (used by current Frontier / Hydration) groups signature components
+  //    under a `signature` field; V2 (older Frontier) had them flat. Field
+  //    names follow polkadot.js's snake_case→camelCase convention.
+  //
+  //    Note: the type name in the runtime is `EthereumTransactionTransactionV3`
+  //    (Frontier crate path → polkadot.js camelCase). We let polkadot.js
+  //    resolve it via the metadata-aware tx builder below — passing the
+  //    structure directly to `meta.tx.ethereum.transact(...)` and letting
+  //    the registry construct the correct typed payload.
+  const toAction = parsed.to ? { Call: parsed.to } : { Create: null }
+  let transactionPayload: any
+  if (parsed.type === 'eip1559') {
+    transactionPayload = {
+      EIP1559: {
+        chainId: parsed.chainId,
+        nonce: parsed.nonce,
+        maxPriorityFeePerGas: parsed.maxPriorityFeePerGas,
+        maxFeePerGas: parsed.maxFeePerGas,
+        gasLimit: parsed.gas,
+        action: toAction,
+        value: parsed.value ?? 0n,
+        input: parsed.data ?? '0x',
+        accessList: parsed.accessList ?? [],
+        signature: {
+          oddYParity: parsed.yParity === 1,
+          r: parsed.r,
+          s: parsed.s,
+        },
+      },
+    }
+  } else if (parsed.type === 'eip2930') {
+    transactionPayload = {
+      EIP2930: {
+        chainId: parsed.chainId,
+        nonce: parsed.nonce,
+        gasPrice: parsed.gasPrice,
+        gasLimit: parsed.gas,
+        action: toAction,
+        value: parsed.value ?? 0n,
+        input: parsed.data ?? '0x',
+        accessList: parsed.accessList ?? [],
+        signature: {
+          oddYParity: parsed.yParity === 1,
+          r: parsed.r,
+          s: parsed.s,
+        },
+      },
+    }
+  } else {
+    // legacy — signature is { v, r, s } here, no oddYParity
+    transactionPayload = {
+      Legacy: {
+        nonce: parsed.nonce,
+        gasPrice: parsed.gasPrice,
+        gasLimit: parsed.gas,
+        action: toAction,
+        value: parsed.value ?? 0n,
+        input: parsed.data ?? '0x',
+        signature: {
+          v: parsed.v,
+          r: parsed.r,
+          s: parsed.s,
+        },
+      },
+    }
+  }
+
+  // 4. Build the unsigned Substrate extrinsic for `Ethereum.transact(tx)`.
+  //    Frontier requires this to be unsigned — its custom `ValidateUnsigned`
+  //    impl recovers the EVM signer and authorises the call. Using the
+  //    metadata-built call function so polkadot.js handles the typed
+  //    encoding (TransactionV2 vs V3) per the runtime's actual signature.
+  const call = ethereumTx(transactionPayload)
+  const extrinsic = registry.createType('Extrinsic', call, { version: 4 })
+  const extrinsicHex = extrinsic.toHex() as HexString
+
+  // 5. Submit. Returns blake2 of the extrinsic; the Ethereum client expects
+  //    keccak256 of the raw tx instead, so we compute and return that.
+  await context.chain.submitExtrinsic(extrinsicHex).catch((err: any) => {
+    throw new ResponseError(-32603, `Failed to submit Ethereum transaction: ${err?.toString?.() ?? err}`)
+  })
+
+  // keccak256(rawTx) — viem doesn't export keccak directly without context,
+  // and Frontier exposes `EthereumRuntimeRPCApi_account_basic` etc. The tx
+  // hash is deterministic from the raw bytes; compute it via @polkadot/util-crypto.
+  const { keccak256AsU8a } = await import('@polkadot/util-crypto')
+  const ethTxHash = u8aToHex(keccak256AsU8a(hexToU8a(rawTx)))
+  return ethTxHash as HexString
 }

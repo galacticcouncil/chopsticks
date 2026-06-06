@@ -139,6 +139,67 @@ export function encodeCallParams(params: {
 }
 
 /**
+ * Encode parameters for EthereumRuntimeRPCApi_create (Frontier API v6).
+ * Used for `eth_call` / `eth_estimateGas` against contract-creation txs
+ * (i.e. `to == null`). `data` carries the init code.
+ */
+export function encodeCreateParams(params: {
+  from?: string
+  data: string
+  value?: bigint
+  gasLimit?: bigint
+  maxFeePerGas?: bigint
+  accessList?: Array<{ address: string; storageKeys: string[] }>
+  estimate?: boolean
+}): HexString {
+  const accessList = params.accessList
+    ? params.accessList.map((entry) => [entry.address, entry.storageKeys])
+    : undefined
+
+  const encoded = registry.createType('EvmCreateParams', {
+    from: params.from ?? '0x' + '00'.repeat(20),
+    data: params.data,
+    value: params.value ?? 0n,
+    gasLimit: params.gasLimit ?? 25000000n,
+    maxFeePerGas: params.maxFeePerGas,
+    maxPriorityFeePerGas: undefined,
+    nonce: undefined,
+    estimate: params.estimate ?? false,
+    accessList: accessList,
+    authorizationList: undefined,
+  })
+
+  return encoded.toHex()
+}
+
+/**
+ * Decode a create result from EthereumRuntimeRPCApi_create. Like
+ * decodeCallResult but the `value` field is the deployed contract address
+ * (H160), not the call return data.
+ */
+export function decodeCreateResult(hex: HexString): {
+  success: boolean
+  contractAddress: string
+  gasUsed: bigint
+} {
+  const result = registry.createType('Result<EvmCreateInfoV2, DispatchError>', hex)
+  const success = (result as any).isOk
+  if (!success) {
+    return {
+      success: false,
+      contractAddress: '0x' + '00'.repeat(20),
+      gasUsed: 0n,
+    }
+  }
+  const info = (result as any).asOk
+  return {
+    success,
+    contractAddress: (info as any).value.toHex(),
+    gasUsed: (info as any).usedGas.effective.toBigInt(),
+  }
+}
+
+/**
  * Resolve an Ethereum block tag ("latest", "earliest", "pending", or hex number) to a Block.
  */
 export async function resolveBlock(context: Context, blockTag?: string): Promise<Block> {

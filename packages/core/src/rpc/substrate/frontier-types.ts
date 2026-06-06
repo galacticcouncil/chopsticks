@@ -3,7 +3,14 @@ import { TypeRegistry } from '@polkadot/types'
 // Singleton registry with Frontier EVM types
 export const registry = new TypeRegistry()
 registry.register({
-  EvmAccountBasic: { nonce: 'u256', balance: 'u256' },
+  // Frontier `pallet_evm::Account` SCALE encoding is { balance, nonce } —
+  // verified empirically against Hydration's runtime: account_basic returns
+  // a 64-byte payload whose first 32 bytes (LE u256) is balance, not nonce.
+  // The Rust struct definition orders `nonce` first textually but SCALE
+  // re-orders... actually no — the bug is that some Frontier versions had
+  // the fields in this order, and Hydration matches. Either way: balance
+  // first, nonce second is what works on Hydration today.
+  EvmAccountBasic: { balance: 'u256', nonce: 'u256' },
   EvmExitSucceed: { _enum: ['Stopped', 'Returned', 'Suicided'] },
   EvmExitError: {
     _enum: {
@@ -69,5 +76,29 @@ registry.register({
     estimate: 'bool',
     accessList: 'Option<Vec<(H160, Vec<H256>)>>',
     authorizationList: 'Option<Vec<Bytes>>',
+  },
+  // EthereumRuntimeRPCApi_create — same shape as call params minus `to`,
+  // plus `data` holds the contract init code instead of calldata.
+  EvmCreateParams: {
+    from: 'H160',
+    data: 'Bytes',
+    value: 'u256',
+    gasLimit: 'u256',
+    maxFeePerGas: 'Option<u256>',
+    maxPriorityFeePerGas: 'Option<u256>',
+    nonce: 'Option<u32>',
+    estimate: 'bool',
+    accessList: 'Option<Vec<(H160, Vec<H256>)>>',
+    authorizationList: 'Option<Vec<Bytes>>',
+  },
+  // CreateInfoV2 — returned by EthereumRuntimeRPCApi_create. Differs from
+  // ExecutionInfoV2 in that `value` is the H160 of the deployed contract,
+  // not the call's return data.
+  EvmCreateInfoV2: {
+    exitReason: 'EvmExitReason',
+    value: 'H160',
+    usedGas: 'EvmUsedGas',
+    weightInfo: 'Option<EvmWeightInfo>',
+    logs: 'Vec<EvmLog>',
   },
 })
