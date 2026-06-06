@@ -4,6 +4,7 @@ import { parseTransaction } from 'viem'
 
 import type { Handler } from '../shared.js'
 import { ResponseError } from '../shared.js'
+import { compactHex } from '../../utils/index.js'
 import {
   decodeAccountBasic,
   decodeCallResult,
@@ -418,11 +419,26 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
   const extrinsic = registry.createType('Extrinsic', call, { version: 4 })
   const extrinsicHex = extrinsic.toHex() as HexString
 
-  // 5. Submit. Returns blake2 of the extrinsic; the Ethereum client expects
-  //    keccak256 of the raw tx instead, so we compute and return that.
-  await context.chain.submitExtrinsic(extrinsicHex).catch((err: any) => {
+  // 5. Submit, with a one-shot listener on APPLY_EXTRINSIC_ERROR so that
+  //    Frontier's ValidateUnsigned rejections (Invalid signature, bad
+  //    nonce, payment failure, etc.) propagate back to the JSON-RPC caller
+  //    instead of being silently swallowed by the txpool.
+  const { APPLY_EXTRINSIC_ERROR } = await import('../../blockchain/txpool.js')
+  let captured: any = null
+  const onApplyError = ([failed, error]: [string, any]) => {
+    if (failed === extrinsicHex) captured = error
+  }
+  context.chain.txPool.event.on(APPLY_EXTRINSIC_ERROR, onApplyError)
+  try {
+    await context.chain.submitExtrinsic(extrinsicHex)
+  } catch (err: any) {
+    context.chain.txPool.event.removeListener(APPLY_EXTRINSIC_ERROR, onApplyError)
     throw new ResponseError(-32603, `Failed to submit Ethereum transaction: ${err?.toString?.() ?? err}`)
-  })
+  }
+  context.chain.txPool.event.removeListener(APPLY_EXTRINSIC_ERROR, onApplyError)
+  if (captured) {
+    throw new ResponseError(-32003, `Ethereum.transact rejected: ${captured.toString?.() ?? captured}`)
+  }
 
   // keccak256(rawTx) — viem doesn't export keccak directly without context,
   // and Frontier exposes `EthereumRuntimeRPCApi_account_basic` etc. The tx
@@ -430,4 +446,159 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
   const { keccak256AsU8a } = await import('@polkadot/util-crypto')
   const ethTxHash = u8aToHex(keccak256AsU8a(hexToU8a(rawTx)))
   return ethTxHash as HexString
+}
+
+// Walk back up to `maxDepth` blocks from head looking for a Frontier
+// `currentTransactionStatuses` entry whose `transactionHash` matches `hash`.
+// Returns the block + tx index, or null if not found within the window.
+async function findEthTx(
+  context: any,
+  hash: HexString,
+  maxDepth = 32,
+): Promise<{ block: any; index: number; status: any; receipt: any; ethTx: any; ethBlock: any } | null> {
+  let block = context.chain.head
+  for (let i = 0; i < maxDepth && block; i++) {
+    const meta = await block.meta
+    const ethQ = (meta.query as any)?.ethereum
+    if (!ethQ) return null
+    // Read storage at this block. The storage entry is a StorageEntry function;
+    // calling it (no args) returns the SCALE-encoded key with a compact-length
+    // prefix that `compactHex` strips. `Optional` modifier means: missing key →
+    // None, present key → the value type directly (no Option tag), so we
+    // decode the inner type only. We resolve the inner type from each entry's
+    // metadata lookup id so we don't pin specific named-type versions (V3/V4
+    // etc. differ across Frontier/runtime generations).
+    const readByLookup = async (entry: any) => {
+      const key = compactHex(entry())
+      const raw = await block.get(key)
+      if (!raw) return null
+      const lookupId = entry.meta.type.asPlain.toNumber()
+      return meta.registry.createType(meta.registry.lookup.getTypeDef(lookupId).type, hexToU8a(raw))
+    }
+    const statusVec: any = await readByLookup(ethQ.currentTransactionStatuses)
+    if (statusVec && statusVec.length) {
+      for (let idx = 0; idx < statusVec.length; idx++) {
+        if (statusVec[idx].transactionHash.toHex().toLowerCase() === hash.toLowerCase()) {
+          const receiptVec: any = await readByLookup(ethQ.currentReceipts)
+          const ethBlock: any = await readByLookup(ethQ.currentBlock)
+          return {
+            block,
+            index: idx,
+            status: statusVec[idx],
+            receipt: receiptVec ? receiptVec[idx] : null,
+            ethTx: ethBlock ? ethBlock.transactions[idx] : null,
+            ethBlock,
+          }
+        }
+      }
+    }
+    block = await block.parentBlock
+  }
+  return null
+}
+
+function ethTxToJson(ethTx: any, status: any, blockHash: HexString, blockNumber: bigint): Record<string, any> {
+  // ethTx is the Ethereum.Transaction enum (Legacy/EIP2930/EIP1559).
+  // Status carries from/to/contractAddress/txIndex. Build the JSON-RPC shape
+  // wallets expect (see Frontier's rpc/src/eth/transaction.rs for reference).
+  const variant = ethTx.type
+  const inner = ethTx[`as${variant}`] ?? ethTx.value
+  const j: Record<string, any> = {
+    hash: status.transactionHash.toHex(),
+    nonce: toEthQuantity(BigInt(inner.nonce.toString())),
+    blockHash,
+    blockNumber: toEthQuantity(blockNumber),
+    transactionIndex: toEthQuantity(BigInt(status.transactionIndex.toString())),
+    from: status.from.toHex(),
+    to: status.to.isNone ? null : status.to.unwrap().toHex(),
+    value: toEthQuantity(BigInt(inner.value.toString())),
+    gas: toEthQuantity(BigInt(inner.gasLimit.toString())),
+    input: u8aToHex(inner.input.toU8a(true)),
+  }
+  if (variant === 'Legacy') {
+    j.type = '0x0'
+    j.gasPrice = toEthQuantity(BigInt(inner.gasPrice.toString()))
+    j.v = toEthQuantity(BigInt(inner.signature.v.toString()))
+    j.r = inner.signature.r.toHex()
+    j.s = inner.signature.s.toHex()
+  } else if (variant === 'EIP2930') {
+    j.type = '0x1'
+    j.chainId = toEthQuantity(BigInt(inner.chainId.toString()))
+    j.gasPrice = toEthQuantity(BigInt(inner.gasPrice.toString()))
+    j.accessList = inner.accessList.toJSON()
+    j.v = inner.signature.oddYParity.isTrue ? '0x1' : '0x0'
+    j.r = inner.signature.r.toHex()
+    j.s = inner.signature.s.toHex()
+  } else {
+    j.type = '0x2'
+    j.chainId = toEthQuantity(BigInt(inner.chainId.toString()))
+    j.maxFeePerGas = toEthQuantity(BigInt(inner.maxFeePerGas.toString()))
+    j.maxPriorityFeePerGas = toEthQuantity(BigInt(inner.maxPriorityFeePerGas.toString()))
+    j.gasPrice = j.maxFeePerGas
+    j.accessList = inner.accessList.toJSON()
+    j.v = inner.signature.oddYParity.isTrue ? '0x1' : '0x0'
+    j.r = inner.signature.r.toHex()
+    j.s = inner.signature.s.toHex()
+  }
+  return j
+}
+
+/**
+ * Return a previously-submitted EVM transaction by its keccak256 hash.
+ * Walks up to 32 recent blocks looking for the tx in Frontier's
+ * `Ethereum::CurrentTransactionStatuses` storage.
+ */
+export const eth_getTransactionByHash: Handler<[HexString], Record<string, any> | null> = async (context, [hash]) => {
+  const found = await findEthTx(context, hash)
+  if (!found) return null
+  return ethTxToJson(found.ethTx, found.status, found.block.hash, BigInt(found.block.number))
+}
+
+/**
+ * Return the receipt for a previously-submitted EVM transaction. Same lookup
+ * as eth_getTransactionByHash, then decodes the EIP-1559 / EIP-2930 / Legacy
+ * receipt out of `Ethereum::CurrentReceipts`.
+ */
+export const eth_getTransactionReceipt: Handler<[HexString], Record<string, any> | null> = async (context, [hash]) => {
+  const found = await findEthTx(context, hash)
+  if (!found || !found.receipt) return null
+  const receipt = found.receipt
+  const variant = receipt.type
+  const inner = receipt[`as${variant}`] ?? receipt.value
+  const blockNumber = BigInt(found.block.number)
+  // ethTx maxFee/gasPrice provides effectiveGasPrice (V3-form txns).
+  const txVariant = found.ethTx.type
+  const txInner = found.ethTx[`as${txVariant}`] ?? found.ethTx.value
+  const effectiveGasPrice =
+    txVariant === 'EIP1559'
+      ? toEthQuantity(BigInt(txInner.maxFeePerGas.toString()))
+      : toEthQuantity(BigInt(txInner.gasPrice.toString()))
+  // Receipts in Frontier are EnvelopedReceipt — variant.statusCode is the
+  // post-Byzantium status (0/1), usedGas is *cumulative*, logs is Vec<Log>.
+  return {
+    transactionHash: found.status.transactionHash.toHex(),
+    transactionIndex: toEthQuantity(BigInt(found.status.transactionIndex.toString())),
+    blockHash: found.block.hash,
+    blockNumber: toEthQuantity(blockNumber),
+    from: found.status.from.toHex(),
+    to: found.status.to.isNone ? null : found.status.to.unwrap().toHex(),
+    contractAddress: found.status.contractAddress.isNone ? null : found.status.contractAddress.unwrap().toHex(),
+    cumulativeGasUsed: toEthQuantity(BigInt(inner.usedGas.toString())),
+    gasUsed: toEthQuantity(BigInt(inner.usedGas.toString())),
+    effectiveGasPrice,
+    status: inner.statusCode.toNumber() === 1 ? '0x1' : '0x0',
+    type: variant === 'Legacy' ? '0x0' : variant === 'EIP2930' ? '0x1' : '0x2',
+    logsBloom: inner.logsBloom.toHex(),
+    logs: inner.logs.map((log: any, i: number) => ({
+      address: log.address.toHex(),
+      topics: log.topics.toJSON(),
+      data: u8aToHex(log.data.toU8a(true)),
+      blockNumber: toEthQuantity(blockNumber),
+      blockHash: found.block.hash,
+      transactionHash: found.status.transactionHash.toHex(),
+      transactionIndex: toEthQuantity(BigInt(found.status.transactionIndex.toString())),
+      logIndex: toEthQuantity(BigInt(i)),
+      removed: false,
+    })),
+  }
 }
