@@ -1,4 +1,4 @@
-endpoint: wss://0.lark.hydration.cloud
+endpoint: wss://2.lark.hydration.cloud
 mock-signature-host: true
 db: ./lark2.db.sqlite
 runtime-log-level: 5
