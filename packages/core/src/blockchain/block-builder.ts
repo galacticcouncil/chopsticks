@@ -324,6 +324,18 @@ export const buildBlock = async (
       const resp = await newBlock.call('BlockBuilder_apply_extrinsic', [extrinsic])
       const outcome = registry.createType<ApplyExtrinsicResult>('ApplyExtrinsicResult', resp.result)
       if (outcome.isErr) {
+        let callName = '?'
+        try {
+          const ext = registry.createType('GenericExtrinsic', extrinsic)
+          const ci = registry.findMetaCall((ext.method as any).callIndex)
+          callName = `${ci.section}.${ci.method}`
+        } catch {
+          /* ignore decode errors */
+        }
+        logger.warn(
+          { call: callName, extrinsic: truncate(extrinsic), error: outcome.asErr.toHuman() },
+          'DROPPED extrinsic at apply (outcome.isErr)',
+        )
         callbacks?.onApplyExtrinsicError?.(extrinsic, outcome.asErr)
         continue
       }
