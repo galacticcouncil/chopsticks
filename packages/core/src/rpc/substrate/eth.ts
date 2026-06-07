@@ -182,19 +182,48 @@ export const eth_estimateGas: Handler<[Record<string, any>, string?], string> = 
 }
 
 /**
- * Returns a synthetic Ethereum block object for a given block number or tag.
- * Since chopsticks doesn't store full Ethereum blocks, we construct a minimal
- * block object from Substrate block data to satisfy wallet queries.
+ * Build a synthetic Ethereum block JSON from a substrate block. If the
+ * substrate block has a `pallet-ethereum`, the included EVM transactions
+ * are surfaced in `transactions` (hashes if `fullTransactions` is false,
+ * full tx objects otherwise). Most other fields are stubbed — chopsticks
+ * doesn't reconstruct Ethereum's state/receipts/transactions roots since
+ * nothing on the substrate side computes them.
  */
-export const eth_getBlockByNumber: Handler<[string, boolean?], Record<string, any> | null> = async (
-  context,
-  [blockTag, _fullTransactions],
-) => {
-  const block = await resolveBlock(context, blockTag)
-  if (!block) return null
-
-  const blockNumber = toEthQuantity(BigInt(block.number))
+async function buildEthBlock(block: any, fullTransactions: boolean): Promise<Record<string, any>> {
+  const blockNumberBig = BigInt(block.number)
+  const blockNumber = toEthQuantity(blockNumberBig)
   const blockHash = block.hash
+
+  let transactions: any[] = []
+  let gasUsedTotal = 0n
+  let timestampHex = '0x0'
+  let baseFeePerGas = '0x0'
+
+  const state = await readEthBlockState(block)
+  if (state) {
+    if (fullTransactions && state.ethBlock) {
+      transactions = state.statuses.map((status, idx) =>
+        ethTxToJson(state.ethBlock.transactions[idx], status, blockHash, blockNumberBig),
+      )
+    } else {
+      transactions = state.statuses.map((status) => status.transactionHash.toHex())
+    }
+    if (state.receipts && state.receipts.length) {
+      // Frontier's receipt.usedGas is cumulative across the block.
+      const last = state.receipts[state.receipts.length - 1]
+      const inner = last[`as${last.type}`] ?? last.value
+      gasUsedTotal = BigInt(inner.usedGas.toString())
+    }
+    if (state.ethBlock) {
+      const header = state.ethBlock.header
+      if (header?.timestamp) {
+        timestampHex = toEthQuantity(BigInt(header.timestamp.toString()))
+      }
+      if (header?.baseFeePerGas) {
+        baseFeePerGas = toEthQuantity(BigInt(header.baseFeePerGas.toString()))
+      }
+    }
+  }
 
   return {
     number: blockNumber,
@@ -212,12 +241,24 @@ export const eth_getBlockByNumber: Handler<[string, boolean?], Record<string, an
     extraData: '0x',
     size: '0x0',
     gasLimit: '0x1312d00',
-    gasUsed: '0x0',
-    timestamp: '0x0',
-    transactions: [],
+    gasUsed: toEthQuantity(gasUsedTotal),
+    timestamp: timestampHex,
+    transactions,
     uncles: [],
-    baseFeePerGas: '0x0',
+    baseFeePerGas,
   }
+}
+
+/**
+ * Returns a synthetic Ethereum block object for a given block number or tag.
+ */
+export const eth_getBlockByNumber: Handler<[string, boolean?], Record<string, any> | null> = async (
+  context,
+  [blockTag, fullTransactions],
+) => {
+  const block = await resolveBlock(context, blockTag)
+  if (!block) return null
+  return buildEthBlock(block, !!fullTransactions)
 }
 
 /**
@@ -225,35 +266,27 @@ export const eth_getBlockByNumber: Handler<[string, boolean?], Record<string, an
  */
 export const eth_getBlockByHash: Handler<[string, boolean?], Record<string, any> | null> = async (
   context,
-  [blockHash, _fullTransactions],
+  [blockHash, fullTransactions],
 ) => {
   const block = await context.chain.getBlock(blockHash as HexString)
   if (!block) return null
+  return buildEthBlock(block, !!fullTransactions)
+}
 
-  const blockNumber = toEthQuantity(BigInt(block.number))
+/** Number of EVM transactions in the block matching the given block number. */
+export const eth_getBlockTransactionCountByNumber: Handler<[string], string | null> = async (context, [blockTag]) => {
+  const block = await resolveBlock(context, blockTag)
+  if (!block) return null
+  const state = await readEthBlockState(block)
+  return toEthQuantity(BigInt(state?.statuses.length ?? 0))
+}
 
-  return {
-    number: blockNumber,
-    hash: block.hash,
-    parentHash: (await block.parentBlock)?.hash ?? '0x' + '00'.repeat(32),
-    nonce: '0x0000000000000000',
-    sha3Uncles: '0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347',
-    logsBloom: '0x' + '00'.repeat(256),
-    transactionsRoot: '0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421',
-    stateRoot: '0x' + '00'.repeat(32),
-    receiptsRoot: '0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421',
-    miner: '0x' + '00'.repeat(20),
-    difficulty: '0x0',
-    totalDifficulty: '0x0',
-    extraData: '0x',
-    size: '0x0',
-    gasLimit: '0x1312d00',
-    gasUsed: '0x0',
-    timestamp: '0x0',
-    transactions: [],
-    uncles: [],
-    baseFeePerGas: '0x0',
-  }
+/** Number of EVM transactions in the block with the given hash. */
+export const eth_getBlockTransactionCountByHash: Handler<[string], string | null> = async (context, [blockHash]) => {
+  const block = await context.chain.getBlock(blockHash as HexString)
+  if (!block) return null
+  const state = await readEthBlockState(block)
+  return toEthQuantity(BigInt(state?.statuses.length ?? 0))
 }
 
 /**
@@ -422,7 +455,10 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
   // 5. Submit, with a one-shot listener on APPLY_EXTRINSIC_ERROR so that
   //    Frontier's ValidateUnsigned rejections (Invalid signature, bad
   //    nonce, payment failure, etc.) propagate back to the JSON-RPC caller
-  //    instead of being silently swallowed by the txpool.
+  //    instead of being silently swallowed by the txpool. Note that in
+  //    Instant block-build mode the actual block-build is fire-and-forget
+  //    from submitExtrinsic — callers should poll eth_getTransactionReceipt
+  //    (which is what viem/ethers do anyway).
   const { APPLY_EXTRINSIC_ERROR } = await import('../../blockchain/txpool.js')
   let captured: any = null
   const onApplyError = ([failed, error]: [string, any]) => {
@@ -435,6 +471,11 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
     context.chain.txPool.event.removeListener(APPLY_EXTRINSIC_ERROR, onApplyError)
     throw new ResponseError(-32603, `Failed to submit Ethereum transaction: ${err?.toString?.() ?? err}`)
   }
+  // Give the asynchronous block-build a tick to drain the txpool so the
+  // returned tx hash is observable on the next RPC poll without forcing
+  // the caller to re-issue. We don't block forever — clients still poll
+  // for receipts the standard way.
+  await new Promise((r) => setTimeout(r, 50))
   context.chain.txPool.event.removeListener(APPLY_EXTRINSIC_ERROR, onApplyError)
   if (captured) {
     throw new ResponseError(-32003, `Ethereum.transact rejected: ${captured.toString?.() ?? captured}`)
@@ -448,6 +489,45 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
   return ethTxHash as HexString
 }
 
+// Read a Frontier `Ethereum::*` storage entry at a specific block. The
+// storage entry is a StorageEntry function; calling it (no args) returns
+// the SCALE-encoded key with a compact-length prefix that `compactHex`
+// strips. `Optional` modifier means: missing key → None, present key →
+// the value type directly (no Option tag), so we decode the inner type
+// only. We resolve the inner type from the entry's metadata lookup id so
+// we don't pin specific named-type versions (V3/V4 etc. differ across
+// Frontier/runtime generations).
+async function readEthStorageAtBlock(block: any, entry: any): Promise<any | null> {
+  const meta = await block.meta
+  const key = compactHex(entry())
+  const raw = await block.get(key)
+  if (!raw) return null
+  const lookupId = entry.meta.type.asPlain.toNumber()
+  return meta.registry.createType(meta.registry.lookup.getTypeDef(lookupId).type, hexToU8a(raw))
+}
+
+// Read Ethereum.currentTransactionStatuses, currentReceipts, currentBlock
+// at a given block in one go. Returns null when the chain doesn't have a
+// pallet-ethereum (i.e. non-EVM substrate chain).
+async function readEthBlockState(block: any): Promise<{
+  statuses: any[]
+  receipts: any[] | null
+  ethBlock: any | null
+} | null> {
+  const meta = await block.meta
+  const ethQ = (meta.query as any)?.ethereum
+  if (!ethQ) return null
+  const statusVec: any = await readEthStorageAtBlock(block, ethQ.currentTransactionStatuses)
+  if (!statusVec) return { statuses: [], receipts: null, ethBlock: null }
+  const receiptVec: any = await readEthStorageAtBlock(block, ethQ.currentReceipts)
+  const ethBlock: any = await readEthStorageAtBlock(block, ethQ.currentBlock)
+  return {
+    statuses: [...statusVec],
+    receipts: receiptVec ? [...receiptVec] : null,
+    ethBlock,
+  }
+}
+
 // Walk back up to `maxDepth` blocks from head looking for a Frontier
 // `currentTransactionStatuses` entry whose `transactionHash` matches `hash`.
 // Returns the block + tx index, or null if not found within the window.
@@ -458,37 +538,17 @@ async function findEthTx(
 ): Promise<{ block: any; index: number; status: any; receipt: any; ethTx: any; ethBlock: any } | null> {
   let block = context.chain.head
   for (let i = 0; i < maxDepth && block; i++) {
-    const meta = await block.meta
-    const ethQ = (meta.query as any)?.ethereum
-    if (!ethQ) return null
-    // Read storage at this block. The storage entry is a StorageEntry function;
-    // calling it (no args) returns the SCALE-encoded key with a compact-length
-    // prefix that `compactHex` strips. `Optional` modifier means: missing key →
-    // None, present key → the value type directly (no Option tag), so we
-    // decode the inner type only. We resolve the inner type from each entry's
-    // metadata lookup id so we don't pin specific named-type versions (V3/V4
-    // etc. differ across Frontier/runtime generations).
-    const readByLookup = async (entry: any) => {
-      const key = compactHex(entry())
-      const raw = await block.get(key)
-      if (!raw) return null
-      const lookupId = entry.meta.type.asPlain.toNumber()
-      return meta.registry.createType(meta.registry.lookup.getTypeDef(lookupId).type, hexToU8a(raw))
-    }
-    const statusVec: any = await readByLookup(ethQ.currentTransactionStatuses)
-    if (statusVec && statusVec.length) {
-      for (let idx = 0; idx < statusVec.length; idx++) {
-        if (statusVec[idx].transactionHash.toHex().toLowerCase() === hash.toLowerCase()) {
-          const receiptVec: any = await readByLookup(ethQ.currentReceipts)
-          const ethBlock: any = await readByLookup(ethQ.currentBlock)
-          return {
-            block,
-            index: idx,
-            status: statusVec[idx],
-            receipt: receiptVec ? receiptVec[idx] : null,
-            ethTx: ethBlock ? ethBlock.transactions[idx] : null,
-            ethBlock,
-          }
+    const state = await readEthBlockState(block)
+    if (state === null) return null
+    for (let idx = 0; idx < state.statuses.length; idx++) {
+      if (state.statuses[idx].transactionHash.toHex().toLowerCase() === hash.toLowerCase()) {
+        return {
+          block,
+          index: idx,
+          status: state.statuses[idx],
+          receipt: state.receipts ? state.receipts[idx] : null,
+          ethTx: state.ethBlock ? state.ethBlock.transactions[idx] : null,
+          ethBlock: state.ethBlock,
         }
       }
     }
@@ -602,3 +662,194 @@ export const eth_getTransactionReceipt: Handler<[HexString], Record<string, any>
     })),
   }
 }
+
+// === eth_getLogs ============================================================
+
+// Resolve an Ethereum block tag — same semantics as resolveBlock, but
+// returns a number for use as a range endpoint (with 'latest' → head).
+async function resolveBlockNumber(context: any, blockTag?: string): Promise<number> {
+  if (!blockTag || blockTag === 'latest' || blockTag === 'pending') {
+    return context.chain.head.number
+  }
+  if (blockTag === 'earliest') return 0
+  return Number(BigInt(blockTag))
+}
+
+// Match a log against the topics filter per the JSON-RPC spec:
+// - filter is a positional array, where each slot is either:
+//     • a single topic hash (must equal the log's topic at that position)
+//     • an array of hashes (log's topic must be one of these)
+//     • null (wildcard at that position)
+// - filter shorter than log.topics ⇒ only the prefix is constrained.
+// - filter longer than log.topics ⇒ no match.
+function matchesTopics(logTopics: string[], filter?: (string | string[] | null)[]): boolean {
+  if (!filter || filter.length === 0) return true
+  if (filter.length > logTopics.length) return false
+  for (let i = 0; i < filter.length; i++) {
+    const slot = filter[i]
+    if (slot === null || slot === undefined) continue
+    const t = logTopics[i].toLowerCase()
+    if (typeof slot === 'string') {
+      if (t !== slot.toLowerCase()) return false
+    } else if (Array.isArray(slot)) {
+      if (slot.length === 0) continue
+      if (!slot.some((s) => s.toLowerCase() === t)) return false
+    }
+  }
+  return true
+}
+
+// Normalise address filter: accept a string, an array, or undefined.
+function matchesAddress(addr: string, filter?: string | string[]): boolean {
+  if (!filter) return true
+  const norm = addr.toLowerCase()
+  if (typeof filter === 'string') return filter.toLowerCase() === norm
+  return filter.some((f) => f.toLowerCase() === norm)
+}
+
+const GET_LOGS_MAX_RANGE = 1024
+
+export interface GetLogsParams {
+  fromBlock?: string
+  toBlock?: string
+  blockHash?: string
+  address?: string | string[]
+  topics?: (string | string[] | null)[]
+}
+
+/**
+ * Return event logs across a block range matching the address / topics
+ * filter. Walks each block's `Ethereum::CurrentTransactionStatuses` to
+ * gather logs (Frontier exposes the same data in the receipts; statuses
+ * carry the resolved blockHash/transactionHash we need to attach).
+ *
+ * Range is capped at GET_LOGS_MAX_RANGE blocks to keep things bounded —
+ * indexers should batch their queries.
+ */
+export const eth_getLogs: Handler<[GetLogsParams], any[]> = async (context, [params]) => {
+  const filter = params ?? {}
+  let blocks: any[]
+  if (filter.blockHash) {
+    const b = await context.chain.getBlock(filter.blockHash as HexString)
+    if (!b) return []
+    blocks = [b]
+  } else {
+    const headNum = context.chain.head.number
+    const from = filter.fromBlock !== undefined ? await resolveBlockNumber(context, filter.fromBlock) : headNum
+    const to = filter.toBlock !== undefined ? await resolveBlockNumber(context, filter.toBlock) : headNum
+    if (to < from) return []
+    if (to - from + 1 > GET_LOGS_MAX_RANGE) {
+      throw new ResponseError(
+        -32005,
+        `eth_getLogs range too large: ${to - from + 1} > ${GET_LOGS_MAX_RANGE} blocks. Batch your query.`,
+      )
+    }
+    blocks = []
+    for (let n = from; n <= to; n++) {
+      const b = await (context.chain as any).getBlockAt(n)
+      if (b) blocks.push(b)
+    }
+  }
+
+  const out: any[] = []
+  for (const block of blocks) {
+    const state = await readEthBlockState(block)
+    if (!state || state.statuses.length === 0) continue
+    const blockNumberHex = toEthQuantity(BigInt(block.number))
+    const blockHash = block.hash
+    // Logs are already in the statuses themselves (Frontier indexes them
+    // both there and in CurrentReceipts; statuses is enough for us).
+    let globalLogIndex = 0
+    for (const status of state.statuses) {
+      const txHash = status.transactionHash.toHex()
+      const txIndex = toEthQuantity(BigInt(status.transactionIndex.toString()))
+      for (const log of status.logs) {
+        const address: string = log.address.toHex()
+        const topics: string[] = log.topics.toJSON()
+        if (!matchesAddress(address, filter.address) || !matchesTopics(topics, filter.topics)) {
+          globalLogIndex++
+          continue
+        }
+        out.push({
+          address,
+          topics,
+          data: u8aToHex(log.data.toU8a(true)),
+          blockNumber: blockNumberHex,
+          blockHash,
+          transactionHash: txHash,
+          transactionIndex: txIndex,
+          logIndex: toEthQuantity(BigInt(globalLogIndex)),
+          removed: false,
+        })
+        globalLogIndex++
+      }
+    }
+  }
+  return out
+}
+
+// === fee/gas RPCs ===========================================================
+
+/**
+ * Returns a synthetic priority fee suggestion. Hydration's EVM uses a
+ * static MinGasPrice (see `dynamicEvmFee` pallet); we surface that value
+ * so EIP-1559 prepareTransactionRequest paths don't 404 and can derive a
+ * sensible `maxPriorityFeePerGas`.
+ */
+export const eth_maxPriorityFeePerGas: Handler<[], string> = async (context) => {
+  const block = context.chain.head
+  const result = await block.call('EthereumRuntimeRPCApi_gas_price', ['0x'])
+  return toEthQuantity(decodeU256LE(result.result as string))
+}
+
+export interface FeeHistoryResult {
+  oldestBlock: string
+  baseFeePerGas: string[]
+  gasUsedRatio: number[]
+  reward?: string[][]
+}
+
+/**
+ * Synthetic feeHistory. Frontier on Hydration has a near-static base fee
+ * (DynamicEvmFee adjusts slowly), so we return the current gas price for
+ * each requested block plus zeroed reward percentiles. This is enough to
+ * unblock viem/ethers EIP-1559 prepareTransactionRequest; consumers that
+ * actually need fee-bidding heuristics should poll real nodes.
+ */
+export const eth_feeHistory: Handler<[string, string, number[]?], FeeHistoryResult> = async (
+  context,
+  [blockCountHex, newestBlock, rewardPercentiles],
+) => {
+  const blockCount = Number(BigInt(blockCountHex))
+  const newest = await resolveBlockNumber(context, newestBlock)
+  const oldest = Math.max(0, newest - blockCount + 1)
+  const gasPriceHex = toEthQuantity(
+    decodeU256LE((await context.chain.head.call('EthereumRuntimeRPCApi_gas_price', ['0x'])).result as string),
+  )
+  const span = newest - oldest + 1
+  const baseFeePerGas = new Array<string>(span + 1).fill(gasPriceHex)
+  const gasUsedRatio = new Array<number>(span).fill(0)
+  const result: FeeHistoryResult = {
+    oldestBlock: toEthQuantity(BigInt(oldest)),
+    baseFeePerGas,
+    gasUsedRatio,
+  }
+  if (rewardPercentiles && rewardPercentiles.length > 0) {
+    result.reward = Array.from({ length: span }, () => rewardPercentiles.map(() => '0x0'))
+  }
+  return result
+}
+
+// === trivial stubs (so wallet probes don't 404) =============================
+
+/** Always returns false — chopsticks isn't a miner. */
+export const eth_mining: Handler<[], boolean> = async () => false
+
+/** Returns 0x0 — chopsticks has no coinbase. */
+export const eth_coinbase: Handler<[], string> = async () => '0x' + '00'.repeat(20)
+
+/** Returns "0x0" — chopsticks isn't a miner. */
+export const eth_hashrate: Handler<[], string> = async () => '0x0'
+
+/** Returns "0x41" (65) — current "Berlin" protocol level is fine to stub. */
+export const eth_protocolVersion: Handler<[], string> = async () => '0x41'
