@@ -1,5 +1,5 @@
-import { decodeProof } from '@acala-network/chopsticks-core'
-import { upgradeRestrictionSignal } from '@acala-network/chopsticks-core/utils/proof.js'
+import { decodeProof } from '@galacticcouncil/chopsticks-core'
+import { upgradeRestrictionSignal } from '@galacticcouncil/chopsticks-core/utils/proof.js'
 import { TypeRegistry } from '@polkadot/types'
 import { describe, expect, it } from 'vitest'
 import networks from './networks.js'

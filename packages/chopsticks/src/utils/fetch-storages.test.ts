@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { SqliteDatabase } from '@acala-network/chopsticks-db'
+import { SqliteDatabase } from '@galacticcouncil/chopsticks-db'
 import { ApiPromise } from '@polkadot/api'
 import { WsProvider } from '@polkadot/rpc-provider'
 import type { ProviderInterface } from '@polkadot/rpc-provider/types'

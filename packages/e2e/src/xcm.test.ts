@@ -1,7 +1,7 @@
-import { setStorage } from '@acala-network/chopsticks-core'
-import type { DownwardMessage } from '@acala-network/chopsticks-core/blockchain/txpool.js'
-import { connectDownward } from '@acala-network/chopsticks-core/xcm/downward.js'
-import { connectUpward } from '@acala-network/chopsticks-core/xcm/upward.js'
+import { setStorage } from '@galacticcouncil/chopsticks-core'
+import type { DownwardMessage } from '@galacticcouncil/chopsticks-core/blockchain/txpool.js'
+import { connectDownward } from '@galacticcouncil/chopsticks-core/xcm/downward.js'
+import { connectUpward } from '@galacticcouncil/chopsticks-core/xcm/upward.js'
 import { beforeEach, describe, it } from 'vitest'
 
 import { check, checkSystemEvents, testingPairs } from './helper.js'

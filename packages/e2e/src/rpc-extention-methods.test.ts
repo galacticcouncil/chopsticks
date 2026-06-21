@@ -1,5 +1,5 @@
 import { join, resolve } from 'node:path'
-import { getRpcExtensionMethods, loadRpcMethodsByScripts } from '@acala-network/chopsticks/plugins/index.js'
+import { getRpcExtensionMethods, loadRpcMethodsByScripts } from '@galacticcouncil/chopsticks/plugins/index.js'
 import { describe, expect, it } from 'vitest'
 import { env, setupApi, ws } from './helper.js'
 

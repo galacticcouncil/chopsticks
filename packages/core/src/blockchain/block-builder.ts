@@ -326,8 +326,8 @@ export const buildBlock = async (
       if (outcome.isErr) {
         let callName = '?'
         try {
-          const ext = registry.createType('GenericExtrinsic', extrinsic)
-          const ci = registry.findMetaCall((ext.method as any).callIndex)
+          const ext = registry.createType('GenericExtrinsic', extrinsic) as any
+          const ci = registry.findMetaCall(ext.method.callIndex)
           callName = `${ci.section}.${ci.method}`
         } catch {
           /* ignore decode errors */

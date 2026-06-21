@@ -6,13 +6,13 @@ You can use Chopsticks to perform runtime migration checks. It doesn't support P
 
 ```bash
 # try-runtime print help
-npx @acala-network/chopsticks try-runtime --help
+npx @galacticcouncil/chopsticks try-runtime --help
 ```
 
 Basic example:
 
 ```bash
-npx @acala-network/chopsticks try-runtime \
+npx @galacticcouncil/chopsticks try-runtime \
   --endpoint <wss://remote.endpoint> \
   --runtime <wasm_runtime_path> \
   --checks PreAndPost

@@ -1,4 +1,4 @@
-import { connectHorizontal } from '@acala-network/chopsticks-core/xcm/horizontal.js'
+import { connectHorizontal } from '@galacticcouncil/chopsticks-core/xcm/horizontal.js'
 import { describe, it } from 'vitest'
 
 import { checkSystemEvents, setupContext, testingPairs } from './helper.js'

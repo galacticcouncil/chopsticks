@@ -1,8 +1,8 @@
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 
-import { setStorage } from '@acala-network/chopsticks'
-import { connectUpward } from '@acala-network/chopsticks-core/xcm/upward.js'
+import { setStorage } from '@galacticcouncil/chopsticks'
+import { connectUpward } from '@galacticcouncil/chopsticks-core/xcm/upward.js'
 import { assert, describe, expect, it } from 'vitest'
 
 import { check, checkSystemEvents, testingPairs } from './helper.js'

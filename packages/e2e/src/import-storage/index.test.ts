@@ -1,6 +1,6 @@
 import path from 'node:path'
-import { compactHex } from '@acala-network/chopsticks'
-import { overrideStorage, overrideWasm } from '@acala-network/chopsticks/utils/override.js'
+import { compactHex } from '@galacticcouncil/chopsticks'
+import { overrideStorage, overrideWasm } from '@galacticcouncil/chopsticks/utils/override.js'
 import { describe, expect, it } from 'vitest'
 import { api, chain, setupApi } from '../helper.js'
 

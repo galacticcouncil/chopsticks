@@ -1,9 +1,10 @@
 import type { JsCallback } from '@acala-network/chopsticks-executor'
-import { hexToString, hexToU8a, u8aToBn } from '@polkadot/util'
+import { hexToString, hexToU8a, u8aToBn, u8aToHex } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
 import { randomAsHex } from '@polkadot/util-crypto'
 import * as Comlink from 'comlink'
 import _ from 'lodash'
+import { LRUCache } from 'lru-cache'
 import type { Block } from '../blockchain/block.js'
 import { defaultLogger, truncate } from '../logger.js'
 import { PREFIX_LENGTH, stripChildPrefix } from '../utils/index.js'
@@ -70,6 +71,70 @@ export interface WasmExecutor {
 
 const logger = defaultLogger.child({ name: 'executor' })
 
+// `sp-maybe-compressed-blob` zstd magic prefix that substrate prepends to a
+// compressed runtime `:code`.
+const ZSTD_PREFIX = new Uint8Array([0x52, 0xbc, 0x53, 0x76, 0x46, 0xdb, 0x8e, 0x05])
+// generous upper bound for a decompressed runtime (substrate's bomb limit is 50MiB)
+const MAX_RUNTIME_SIZE = 128 * 1024 * 1024
+
+let __zstdDecompressSync: ((buf: Uint8Array, opts?: any) => Uint8Array) | undefined
+let __zstdProbed = false
+const probeZstd = async () => {
+  if (__zstdProbed) return
+  __zstdProbed = true
+  // Only node (or bun) exposes node:zlib; browsers fall back to passing the
+  // compressed blob straight to the executor (its previous behaviour).
+  const isNode = typeof process !== 'undefined' && process?.versions?.node
+  if (!isNode) return
+  try {
+    const zlib = await import('node:zlib')
+    if (typeof (zlib as any).zstdDecompressSync === 'function') {
+      __zstdDecompressSync = (zlib as any).zstdDecompressSync
+    }
+  } catch {
+    // node:zlib without zstd support (< v22.15) — leave decompression disabled
+  }
+}
+
+const decompressedWasmCache = new LRUCache<HexString, HexString>({ max: 8 })
+
+/**
+ * Decompress a zstd-compressed runtime `:code` once on the main thread and cache
+ * the result, so the wasm executor receives a plain wasm blob instead of
+ * re-running its (32-bit, memory-bound) zstd decoder on every runtime call — which
+ * can exhaust memory and panic ruzstd (galacticcouncil/chopsticks#5). This mirrors
+ * what `--wasm-override` with an uncompressed `*.compact.wasm` does manually.
+ *
+ * Falls back to the original blob for uncompressed code, in the browser, on older
+ * node without zstd support, or if decompression fails — i.e. never worse than
+ * the previous behaviour.
+ */
+export const maybeDecompressWasm = async (code: HexString): Promise<HexString> => {
+  const cached = decompressedWasmCache.get(code)
+  if (cached) return cached
+
+  await probeZstd()
+  if (!__zstdDecompressSync) return code
+
+  const bytes = hexToU8a(code)
+  if (bytes.length < ZSTD_PREFIX.length) return code
+  for (let i = 0; i < ZSTD_PREFIX.length; i++) {
+    if (bytes[i] !== ZSTD_PREFIX[i]) return code // not a compressed blob
+  }
+
+  try {
+    const decompressed = u8aToHex(
+      __zstdDecompressSync(bytes.subarray(ZSTD_PREFIX.length), { maxOutputLength: MAX_RUNTIME_SIZE }),
+    )
+    decompressedWasmCache.set(code, decompressed)
+    logger.debug(`Decompressed runtime wasm ${bytes.length} -> ${decompressed.length / 2 - 1} bytes`)
+    return decompressed
+  } catch (err) {
+    logger.warn({ err }, 'Failed to decompress runtime wasm; passing compressed blob to executor')
+    return code
+  }
+}
+
 let __executor_worker: Promise<{ remote: Comlink.Remote<WasmExecutor>; terminate: () => Promise<void> }> | undefined
 export const getWorker = async () => {
   if (__executor_worker) return __executor_worker
@@ -86,7 +151,8 @@ export const getWorker = async () => {
 
 export const getRuntimeVersion = _.memoize(async (code: HexString): Promise<RuntimeVersion> => {
   const worker = await getWorker()
-  return worker.remote.getRuntimeVersion(code).then((version) => {
+  const wasm = await maybeDecompressWasm(code)
+  return worker.remote.getRuntimeVersion(wasm).then((version) => {
     version.specName = hexToString(version.specName)
     version.implName = hexToString(version.implName)
     return version
@@ -130,6 +196,7 @@ export const runTask = async (
   const taskId = nextTaskId++
   const task2 = {
     ...task,
+    wasm: await maybeDecompressWasm(task.wasm),
     id: taskId,
     storageProofSize: task.storageProofSize ?? 0,
     mockSignatureHost: overrideMockSignatureHost ? 2 : task.mockSignatureHost ? 1 : 0,

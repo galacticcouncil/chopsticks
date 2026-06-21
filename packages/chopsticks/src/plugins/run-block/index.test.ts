@@ -1,5 +1,5 @@
 import { setup } from '@galacticcouncil/chopsticks-core'
-import { SqliteDatabase } from '@acala-network/chopsticks-db'
+import { SqliteDatabase } from '@galacticcouncil/chopsticks-db'
 import { describe, expect, it } from 'vitest'
 
 import { rpc } from './index.js'

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { runTask, taskHandler } from '@acala-network/chopsticks-core'
+import { runTask, taskHandler } from '@galacticcouncil/chopsticks-core'
 import type { HexString } from '@polkadot/util/types'
 import { describe, expect, it } from 'vitest'
 

@@ -1,4 +1,4 @@
-import { environment, environmentSchema } from '@acala-network/chopsticks-core'
+import { environment, environmentSchema } from '@galacticcouncil/chopsticks-core'
 import { describe, expect, it } from 'vitest'
 
 describe('environment', () => {

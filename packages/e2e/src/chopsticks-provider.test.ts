@@ -1,4 +1,4 @@
-import { BuildBlockMode, ChopsticksProvider, setStorage } from '@acala-network/chopsticks-core'
+import { BuildBlockMode, ChopsticksProvider, setStorage } from '@galacticcouncil/chopsticks-core'
 import { ApiPromise } from '@polkadot/api'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 

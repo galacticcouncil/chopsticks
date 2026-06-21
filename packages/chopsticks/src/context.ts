@@ -7,7 +7,7 @@ import {
   setup,
   timeTravel,
 } from '@galacticcouncil/chopsticks-core'
-import { SqliteDatabase } from '@acala-network/chopsticks-db'
+import { SqliteDatabase } from '@galacticcouncil/chopsticks-db'
 import type { HexString } from '@polkadot/util/types'
 import axios from 'axios'
 import { apiFetching } from './logger.js'
