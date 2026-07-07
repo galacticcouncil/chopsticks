@@ -7,7 +7,7 @@ import { hexToU8a, stringToHex } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
 
 import { compactHex } from '../utils/index.js'
-import type { RuntimeVersion, TaskCallResponse } from '../wasm-executor/index.js'
+import type { RuntimeVersion, TaskCallResponse, WorkerLockToken } from '../wasm-executor/index.js'
 import { getRuntimeVersion, runTask, taskHandler } from '../wasm-executor/index.js'
 import type { Blockchain } from './index.js'
 import {
@@ -314,8 +314,18 @@ export class Block {
   /**
    * Call a runtime method.
    */
-  async call(method: string, args: HexString[], mockSigantureHostOverride = false): Promise<TaskCallResponse> {
+  async call(
+    method: string,
+    args: HexString[],
+    mockSigantureHostOverride = false,
+    lockToken?: WorkerLockToken,
+  ): Promise<TaskCallResponse> {
     const wasm = await this.wasm
+    // a fresh token identifies this call chain so that any nested call it triggers
+    // through its own callback (e.g. an offchain worker validating a submitted
+    // extrinsic) recognizes itself and bypasses the executor's exclusivity queue
+    // instead of deadlocking against this still-in-flight call
+    const token = lockToken ?? Symbol('worker-lock')
     const response = await runTask(
       {
         wasm,
@@ -324,8 +334,9 @@ export class Block {
         allowUnresolvedImports: this.#chain.allowUnresolvedImports,
         runtimeLogLevel: this.#chain.runtimeLogLevel,
       },
-      taskHandler(this),
+      taskHandler(this, token),
       mockSigantureHostOverride,
+      token,
     )
     if ('Call' in response) {
       if (this.chain.offchainWorker) {

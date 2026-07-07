@@ -135,28 +135,90 @@ export const maybeDecompressWasm = async (code: HexString): Promise<HexString> =
   }
 }
 
-let __executor_worker: Promise<{ remote: Comlink.Remote<WasmExecutor>; terminate: () => Promise<void> }> | undefined
-export const getWorker = async () => {
+type ExecutorWorker = {
+  remote: Comlink.Remote<WasmExecutor>
+  crashed: Promise<never>
+  terminate: () => Promise<void>
+}
+
+let __executor_worker: Promise<ExecutorWorker> | undefined
+export const getWorker = async (): Promise<ExecutorWorker> => {
   if (__executor_worker) return __executor_worker
 
   const isNode = typeof process !== 'undefined' && process?.versions?.node // true for node or bun
 
-  if (isNode) {
-    __executor_worker = import('./node-worker.js').then(({ startWorker }) => startWorker())
-  } else {
-    __executor_worker = import('./browser-worker.js').then(({ startWorker }) => startWorker())
+  const startingWorker: Promise<ExecutorWorker> = isNode
+    ? import('./node-worker.js').then(({ startWorker }) => startWorker())
+    : import('./browser-worker.js').then(({ startWorker }) => startWorker())
+
+  const thisWorker: Promise<ExecutorWorker> = startingWorker.then((worker) => {
+    worker.crashed.catch((err) => {
+      logger.error({ err }, 'executor worker crashed; it will be respawned on next use')
+      if (__executor_worker === thisWorker) __executor_worker = undefined
+    })
+    return worker
+  })
+  __executor_worker = thisWorker
+  return thisWorker
+}
+
+// races a worker call against that worker's crash signal, so a crashed worker
+// rejects in-flight callers instead of leaving them hanging forever
+const callWorker = <T>(worker: ExecutorWorker, promise: Promise<T>): Promise<T> => {
+  return Promise.race([promise, worker.crashed])
+}
+
+/**
+ * Identifies a chain of nested wasm-executor calls that all belong to the same
+ * outer runTask() invocation — e.g. an offchain worker submitting a transaction,
+ * which synchronously triggers a nested extrinsic-validation call. Threading the
+ * same token down that chain lets it recognize itself and bypass the exclusivity
+ * queue below, instead of deadlocking against its own outer call.
+ */
+export type WorkerLockToken = symbol
+
+let workerLockQueue: Promise<void> = Promise.resolve()
+let currentWorkerLockHolder: WorkerLockToken | undefined
+
+/**
+ * The compiled wasm executor module keeps JS-side mutable glue state (string
+ * marshalling scratch buffers, cached memory views, etc.) that isn't safe for
+ * concurrent/interleaved use. Overlapping calls — e.g. a wallet UI fetching many
+ * asset balances in parallel — were found to corrupt that state and crash the
+ * worker with a wasm `unreachable` trap (galacticcouncil/chopsticks#6). This
+ * serializes every call into a given worker so only one call's lifetime is ever
+ * in flight, while letting a call's own nested sub-calls (sharing its token)
+ * bypass the queue so they don't deadlock against it.
+ */
+export const runExclusive = async <T>(fn: () => Promise<T>, holderToken?: WorkerLockToken): Promise<T> => {
+  if (holderToken && holderToken === currentWorkerLockHolder) {
+    return fn()
   }
-  return __executor_worker
+  const myTurn = workerLockQueue
+  let release!: () => void
+  workerLockQueue = new Promise((resolve) => {
+    release = resolve
+  })
+  await myTurn
+  currentWorkerLockHolder = holderToken ?? Symbol('worker-lock')
+  try {
+    return await fn()
+  } finally {
+    currentWorkerLockHolder = undefined
+    release()
+  }
 }
 
 export const getRuntimeVersion = _.memoize(async (code: HexString): Promise<RuntimeVersion> => {
   const worker = await getWorker()
   const wasm = await maybeDecompressWasm(code)
-  return worker.remote.getRuntimeVersion(wasm).then((version) => {
-    version.specName = hexToString(version.specName)
-    version.implName = hexToString(version.implName)
-    return version
-  })
+  return runExclusive(() =>
+    callWorker(worker, worker.remote.getRuntimeVersion(wasm)).then((version) => {
+      version.specName = hexToString(version.specName)
+      version.implName = hexToString(version.implName)
+      return version
+    }),
+  )
 })
 
 // trie_version: 0 for old trie, 1 for new trie
@@ -165,12 +227,12 @@ export const calculateStateRoot = async (
   trie_version: number,
 ): Promise<HexString> => {
   const worker = await getWorker()
-  return worker.remote.calculateStateRoot(entries, trie_version)
+  return runExclusive(() => callWorker(worker, worker.remote.calculateStateRoot(entries, trie_version)))
 }
 
 export const decodeProof = async (trieRootHash: HexString, nodes: HexString[]) => {
   const worker = await getWorker()
-  const result = await worker.remote.decodeProof(trieRootHash, nodes)
+  const result = await runExclusive(() => callWorker(worker, worker.remote.decodeProof(trieRootHash, nodes)))
   return result.reduce(
     (accum, [key, value]) => {
       accum[key] = value
@@ -182,7 +244,9 @@ export const decodeProof = async (trieRootHash: HexString, nodes: HexString[]) =
 
 export const createProof = async (nodes: HexString[], updates: [HexString, HexString | null][]) => {
   const worker = await getWorker()
-  const [trieRootHash, newNodes] = await worker.remote.createProof(nodes, updates)
+  const [trieRootHash, newNodes] = await runExclusive(() =>
+    callWorker(worker, worker.remote.createProof(nodes, updates)),
+  )
   return { trieRootHash, nodes: newNodes }
 }
 
@@ -192,6 +256,7 @@ export const runTask = async (
   task: TaskCall,
   callback: JsCallback = emptyTaskHandler,
   overrideMockSignatureHost = false,
+  lockToken?: WorkerLockToken,
 ) => {
   const taskId = nextTaskId++
   const task2 = {
@@ -204,7 +269,13 @@ export const runTask = async (
   const worker = await getWorker()
   logger.trace(truncate(task2), `runTask #${taskId}`)
 
-  const response = await worker.remote.runTask(task2, Comlink.proxy(callback))
+  // Comlink.Remote<T> distributes its Promise-wrapping over TaskResponse's union members,
+  // yielding `Promise<Call> | Promise<Error>` instead of `Promise<Call | Error>`; cast back
+  // to the interface's declared return type so it unifies with `worker.crashed` below.
+  const response = await runExclusive(
+    () => callWorker(worker, worker.remote.runTask(task2, Comlink.proxy(callback)) as Promise<TaskResponse>),
+    lockToken,
+  )
   if ('Call' in response) {
     logger.trace(truncate(response.Call), `taskResponse #${taskId}`)
   } else {
@@ -213,7 +284,7 @@ export const runTask = async (
   return response
 }
 
-export const taskHandler = (block: Block): JsCallback => {
+export const taskHandler = (block: Block, lockToken?: WorkerLockToken): JsCallback => {
   return {
     getStorage: async (key: HexString) => block.get(key),
     getNextKey: async (prefix: HexString, key: HexString) => {
@@ -233,7 +304,7 @@ export const taskHandler = (block: Block): JsCallback => {
     offchainSubmitTransaction: async (tx: HexString) => {
       if (!block.chain.offchainWorker) throw new Error('offchain worker not found')
       try {
-        const hash = await block.chain.offchainWorker.pushExtrinsic(block, tx)
+        const hash = await block.chain.offchainWorker.pushExtrinsic(block, tx, lockToken)
         logger.trace({ hash }, 'offchainSubmitTransaction')
         return true
       } catch (error) {

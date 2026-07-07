@@ -3,6 +3,7 @@ import { blake2AsHex } from '@polkadot/util-crypto'
 import { queueScheduler } from 'rxjs'
 import type { Block } from './blockchain/block.js'
 import { defaultLogger } from './logger.js'
+import type { WorkerLockToken } from './wasm-executor/index.js'
 
 const logger = defaultLogger.child({ name: 'offchain' })
 
@@ -42,8 +43,8 @@ export class OffchainWorker {
     }
   }
 
-  async pushExtrinsic(block: Block, extrinsic: HexString) {
-    const validity = await block.chain.validateExtrinsic(extrinsic, '0x01')
+  async pushExtrinsic(block: Block, extrinsic: HexString, lockToken?: WorkerLockToken) {
+    const validity = await block.chain.validateExtrinsic(extrinsic, '0x01', lockToken)
     if (validity.isOk) {
       this.pendingExtrinsics.push(extrinsic)
       return blake2AsHex(extrinsic, 256)

@@ -14,7 +14,7 @@ import type { Database } from '../database.js'
 import { defaultLogger } from '../logger.js'
 import { OffchainWorker } from '../offchain.js'
 import { compactHex } from '../utils/index.js'
-import type { RuntimeVersion } from '../wasm-executor/index.js'
+import type { RuntimeVersion, WorkerLockToken } from '../wasm-executor/index.js'
 import { Block } from './block.js'
 import { dryRunExtrinsic, dryRunExtrinsicsAmortized, dryRunInherents } from './block-builder.js'
 import { HeadState } from './head-state.js'
@@ -383,9 +383,10 @@ export class Blockchain {
   async validateExtrinsic(
     extrinsic: HexString,
     source: '0x00' | '0x01' | '0x02' = '0x02' /** External */,
+    lockToken?: WorkerLockToken,
   ): Promise<TransactionValidity> {
     const args = u8aToHex(u8aConcat(source, extrinsic, this.head.hash))
-    const res = await this.head.call('TaggedTransactionQueue_validate_transaction', [args])
+    const res = await this.head.call('TaggedTransactionQueue_validate_transaction', [args], false, lockToken)
     const registry = await this.head.registry
     return registry.createType<TransactionValidity>('TransactionValidity', res.result)
   }
