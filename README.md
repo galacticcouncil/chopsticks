@@ -1,4 +1,4 @@
-# Chopsticks
+# Chopsticks · Galactic Council edition
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/chopsticks-logo-white.svg">
@@ -6,429 +6,163 @@
   <img width="100%" alt="chopsticks logo" src="docs/chopsticks-logo-dark.svg">
 </picture>
 
-Create parallel reality of your Substrate network.
+Fork any Substrate chain into a local parallel reality — then point a real dApp at it.
 
-## Introduction
+This is the [Galactic Council](https://github.com/galacticcouncil) fork of
+[AcalaNetwork/chopsticks](https://github.com/AcalaNetwork/chopsticks), tuned for
+**Hydration**: it speaks Ethereum JSON-RPC to Frontier chains, survives long-running
+sessions under sustained dApp load, and ships ready-made Hydration configs.
 
-Chopsticks provides a developer-friendly method of locally forking existing Substrate based chains. It allows for the replaying of blocks to easily examine how extrinsics effect state, the forking of multiple blocks for XCM testing, and more. This allows developers to test and experiment with their own custom blockchain configurations in a local development environment, without the need to deploy a live network. Chopsticks aims to simplify the process of building blockchain applications on Substrate and make it accessible to a wider range of developers.
-
-## Quick Start
-
-Fork Acala mainnet: `npx @acala-network/chopsticks@latest --endpoint=wss://acala-rpc.aca-api.network/ws`
-
-It is recommended to use config file. You can check [configs](configs/) for examples.
-
-Run node using config file
+## Quick start
 
 ```bash
-# npx @acala-network/chopsticks@latest --config= url | path | config_file_name
-# i.e: using configs/acala.yml
+# fork Hydration mainnet
+npx @galacticcouncil/chopsticks@latest -c configs/hydradx.yml
 
-npx @acala-network/chopsticks@latest -c acala
+# or any endpoint directly
+npx @galacticcouncil/chopsticks@latest --endpoint=wss://hydration-rpc.n.dwellir.com
 ```
 
-**Note:** While Chopsticks may work with `bun`, it is not recommended due to known issues with Bun's WASM support, which can cause the Chopsticks instance to hang.
+The fork listens on `ws://localhost:8000` (and HTTP on the same port). Point polkadot.js
+apps, a wallet, or your dApp at it and go.
 
-## Wiki
+## Why this fork
 
-Documentation and tutorials are available at [wiki](https://github.com/AcalaNetwork/chopsticks/wiki).
+Advantages over upstream `@acala-network/chopsticks`:
 
-## EVM+ tracing
+- **Ethereum JSON-RPC surface** → upstream has none; here Frontier chains (Hydration,
+  Acala EVM+, Moonbeam-alikes) answer `eth_*`/`net_*`/`web3_*`, so MetaMask, viem,
+  ethers, and dApp EVM code paths work against the fork unmodified:
+  - reads: `eth_call`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`,
+    `eth_getTransactionCount`, `eth_getBlockByNumber`/`ByHash`, `eth_getLogs`
+  - writes: `eth_sendRawTransaction` (Frontier `Ethereum.transact` with real EVM
+    signature validation), `eth_estimateGas` incl. contract creation
+  - receipts & fees: `eth_getTransactionByHash`, `eth_getTransactionReceipt`,
+    `eth_gasPrice`, `eth_feeHistory`, `eth_maxPriorityFeePerGas`
+  - wallet-probe stubs: `eth_chainId`, `eth_accounts`, `eth_syncing`, `net_version`, …
+- **Long-running forks don't OOM** → upstream pins every storage read forever (per-block
+  read caches, subscription state, per-block decorated metadata), so a fork serving a
+  dApp while producing blocks dies with a V8 heap OOM after a few hundred blocks. Here
+  read caches are evicted as head advances, block diffs contain only real writes, and
+  metadata is decorated once per runtime version. Memory plateaus instead of climbing.
+- **Bounded remote-storage cache** → values fetched from the upstream node land in a
+  shared LRU (`CHOPSTICKS_STORAGE_CACHE_MB`, default 128) instead of growing without limit.
+- **Configurable `eth_getLogs` range** → `eth-get-logs-max-range` (default 10000,
+  `0` = unlimited) instead of upstream-style hardcoded caps; wide scans stream block by
+  block instead of pinning the whole range in memory.
+- **Fast full-map iteration** → `state_getKeysPaged` prefetches each key page's values
+  in a single upstream round-trip, so `.entries()` over Hydration's ~1450-asset
+  registry takes ~1s cold / ~10ms warm instead of 13s+ of key-by-key fetches.
+- **Runtime-call result cache** → runtime execution is deterministic per block state,
+  so repeated `state_call`s (dApp boot retries, router-graph rebuilds, wallet polling)
+  return from cache in ~1ms instead of re-executing wasm. Invalidated on any storage
+  mutation (`dev_setStorage`, block building, snapshot restore).
+- **Executor hardening** → zstd-compressed runtimes are decompressed once on the main
+  thread (no ruzstd OOM panics), executor worker errors no longer crash the whole
+  process, and concurrent wasm calls are serialized instead of racing.
+- **No silent drops** → extrinsics that fail at `apply_extrinsic` during block building
+  are logged with the decoded call and error; upstream swallows them.
+- **`npx` actually works** → the published package resolves `@acala-network/chopsticks-db`
+  correctly (upstream's bin was broken for a while).
+- **Hydration configs** → [`configs/hydradx.yml`](configs/hydradx.yml) (funded dev
+  accounts, mock signatures), [`configs/hydradx-mainnet.yml`](configs/hydradx-mainnet.yml)
+  (mainnet-fork dry-runs).
 
-Documentation for EVM+ tracing is available at [EVM+ tracing](packages/chopsticks/src/plugins/trace-transaction/README.md).
+Everything else — XCM multichain setups, `run-block`, `try-runtime`, storage overrides,
+time travel — works as documented upstream.
 
-## Web testing
-
-Run Chopsticks in browser? Now you can turn a mainnet into a devnet and play with it directly in your browser!
-
-An example is available at [acalanetwork.github.io/chopsticks](https://acalanetwork.github.io/chopsticks/), and the corresponding code can be found in [web-test](packages/web-test).
-
-## Environment Variables
-
-For chopsticks CLI, you can find the full list of available environment variables [here](https://acalanetwork.github.io/chopsticks/docs/core/README.html#environment).
-
-## Install
-
-Make sure you have setup Rust environment (>= 1.64).
-
-- Clone repository with submodules ([smoldot](https://github.com/paritytech/smoldot))
-  - `git clone --recurse-submodules https://github.com/AcalaNetwork/chopsticks.git && cd chopsticks`
-- Install deps
-  - `yarn`
-- Build wasm. Please do not use IDE's built-in tools to build wasm.
-  - `yarn build-wasm`
-
-## Run
-
-- Replay latest block
-  - `npx @acala-network/chopsticks@latest run-block --endpoint=wss://acala-rpc-2.aca-api.network/ws`
-  - This will replay the last block and print out the changed storages
-  - Use option `-b|--block` to replay certain block hash
-  - Use option `--output-path=<file_path>` to print out JSON file
-  - Use option `--html` to generate storage diff preview (add `--open` to automatically open file)
-
-## Dry-run
-
-- Dry run help:
- ```
- npx @acala-network/chopsticks@latest dry-run --help
- ```
-
-- Dry run extrinsic, same as `run-block`, example:
-```
-npx @acala-network/chopsticks@latest dry-run --config=configs/mandala.yml --html --open --extrinsic=0x39028400d43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d01183abac17ff331f8b65dbeddd27f014dedd892020cfdc6c40b574f6930f8cf391bde95997ae2edc5b1192a4036ea97804956c4b5497175c8d68b630301685889450200000a00008eaf04151687736326c9fea17e25fc5287613693c912909cb226aa4794f26a480284d717
-```
-
-- Dry run call, make sure `mock-signature-host: true` to fake caller's signature:
-```
-npx @acala-network/chopsticks@latest dry-run --config=configs/mandala.yml --html --open --extrinsic=0xff00000080969800 --address=5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY --at=<block_hash_optional>
-```
-
-- Dry run a preimage:
- ```
-npx @acala-network/chopsticks@latest dry-run --endpoint=wss://polkadot-rpc.n.dwellir.com --preimage=<preimage> --open
- ```
-
-- Dry run a preimage and execute an extrinsic after that:
-```
-npx @acala-network/chopsticks@latest dry-run --endpoint=wss://polkadot-rpc.n.dwellir.com --preimage=<preimage> --extrinsic=<extrinsic> --open
-```
-
-- Dry run a preimage and execute a call after that, make sure `mock-signature-host: true` to fake caller's signature:
- ```
-npx @acala-network/chopsticks@latest dry-run --config=configs/mandala.yml --preimage=<preimage> --extrinsic=<call> --address=<who> --open
- ```
-
-- Run a test node
-  - `npx @acala-network/chopsticks@latest --endpoint=wss://acala-rpc-2.aca-api.network/ws`
-  - You have a test node running at `ws://localhost:8000`
-  - You can use [Polkadot.js Apps](https://polkadot.js.org/apps/) to connect to this node
-  - Submit any transaction to produce a new block in the in parallel reality
-  - (Optional) Pre-define/override storage using option `-s|--import-storage=storage.[json/yaml]`. See example storage below.
-
-  ```json5
-  {
-    "Sudo": {
-      "Key": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"
-    },
-    "TechnicalCommittee": {
-      "Members": ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"]
-    },
-    "Tokens": {
-      "Accounts": [
-        [
-          ["5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY", { "token": "KAR" }],
-          {
-            "free": 1000000000000000,
-          }
-        ]
-      ]
-    },
-    "Whitelist": {
-      "WhitelistedCall": [
-        [
-          ["0x3146d2141cdb95de80488d6cecbb5d7577dd59069efc366cb1be7fe64f02e62c"],
-          "0x" // please use 0x for null values
-        ],
-      ]
-    }
-  }
-  ```
-
-- Run Kusama fork
-  - Edit configs/kusama.yml if needed. (e.g. update the block number)
-  - `npx @acala-network/chopsticks@latest --config=configs/kusama.yml`
-
-- Setup XCM multichain
-**_NOTE:_** You can also connect multiple parachains without a relaychain
+## Using the EVM RPC
 
 ```bash
-npx @acala-network/chopsticks@latest xcm -r kusama -p karura -p statemine
+# fork with a persistent db so storage reads are cached across restarts
+npx @galacticcouncil/chopsticks@latest -c configs/hydradx.yml
+
+# then, e.g.
+curl -s http://localhost:8000 -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 ```
 
-## Proxy
+Notes:
 
-Chopsticks respect `http_proxy` and `https_proxy` environment variables.
-Export `ROARR_LOG=true` environment variable to enable log printing to stdout.
-To learn more, see https://www.npmjs.com/package/global-agent?activeTab=readme
+- `eth_sendRawTransaction` accepts legacy / EIP-2930 / EIP-1559 raw transactions,
+  wraps them in an unsigned `Ethereum.transact`, and returns the Ethereum tx hash.
+  Frontier's `ValidateUnsigned` checks the embedded EVM signature — rejections
+  (bad nonce, insufficient balance, wrong chainId) surface as JSON-RPC errors.
+  Poll `eth_getTransactionReceipt` for inclusion, as wallets already do.
+- `eth_getLogs` scans Frontier's per-block transaction statuses. Cap the range per
+  query with `eth-get-logs-max-range` (YAML or CLI flag).
+- Blocks are synthetic on the Substrate side; Ethereum state/receipt/tx roots in
+  `eth_getBlockBy*` are stubbed — consensus-grade fields are not reconstructed.
 
-## Plugins
+## Configuration
 
-Chopsticks is designed to be extensible. You can write your own plugin to extend Chopsticks' functionality.
-
-There are 2 types of plugins: `cli` and `rpc`. `cli` plugins are used to extend Chopsticks' CLI, while `rpc` plugins are used to extend Chopsticks' RPC.
-
-To create a new plugin, you could check out the [run-block plugin](packages/chopsticks/src/plugins/run-block/) as an example.
-
-
-## RPC Methods
-
-Chopsticks allows you to load your extended rpc methods by adding the cli argument `--unsafe-rpc-methods=<file path>`or `-ur=<file path>`.
-
-### **WARNING:**
-
-It loads an **unverified** scripts, making it **unsafe**. Ensure you load a **trusted** script.
-
-**example**:
-
-`npx @acala-network/chopsticks@latest --unsafe-rpc-methods=rpc-methods-scripts.js`
-
-**scripts example of rpc-methods-scripts:**
-
-```
-return {
-  async testdev_testRpcMethod1(context, params) {
-    console.log('testdev_testRpcMethod 1', params)
-    return { methods: 1, params }
-  },
-  async testdev_testRpcMethod2(context, params) {
-    console.log('testdev_testRpcMethod 2', params)
-    return { methods: 2, params }
-  },
-}
-```
-
-## Testing with @acala-network/chopsticks-testing
-
-The `@acala-network/chopsticks-testing` package provides powerful utilities for testing blockchain data, making it easier to write and maintain tests for your Substrate-based chain. It offers features like data redaction, event filtering, snapshot testing, and XCM message checking.
-
-### Installation
-
-```bash
-npm install --save-dev @acala-network/chopsticks-testing
-```
-
-### Basic Usage
-
-```typescript
-import { withExpect, setupContext } from '@acala-network/chopsticks-testing';
-import { describe, expect, it } from 'vitest'; // or jest, or other test runners
-
-// Create testing utilities with your test runner's expect function
-const { check, checkEvents, checkSystemEvents, checkUmp, checkHrmp } = withExpect(expect);
-
-describe('My Chain Tests', () => {
-  it('should process events correctly', async () => {
-	const network = await setupContext({ endpoint: 'wss://polkadot-rpc.n.dwellir.com' });
-    // Check and redact system events
-    await checkSystemEvents(network)
-      .redact({ number: 2, hash: true })
-      .toMatchSnapshot('system events');
-
-    // Filter specific events
-    await checkSystemEvents(network, 'balances', { section: 'system', method: 'ExtrinsicSuccess' })
-      .toMatchSnapshot('filtered events');
-  });
-});
-```
-
-### Data Redaction
-
-The testing package provides powerful redaction capabilities to make your tests more stable and focused on what matters:
-
-```typescript
-await check(someData)
-  .redact({
-    number: 2,           // Redact numbers with 2 decimal precision
-    hash: true,          // Redact 32-byte hex values
-    hex: true,           // Redact any hex values
-    address: true,       // Redact base58 addresses
-    redactKeys: /hash/,  // Redact values of keys matching regex
-    removeKeys: /time/   // Remove keys matching regex entirely
-  })
-  .toMatchSnapshot('redacted data');
-```
-
-### Event Filtering
-
-Filter and check specific blockchain events:
-
-```typescript
-// Check all balances events
-await checkSystemEvents(api, 'balances')
-  .toMatchSnapshot('balances events');
-
-// Check specific event type
-await checkSystemEvents(api, { section: 'system', method: 'ExtrinsicSuccess' })
-  .toMatchSnapshot('successful extrinsics');
-
-// Multiple filters
-await checkSystemEvents(api,
-  'balances',
-  { section: 'system', method: 'ExtrinsicSuccess' }
-)
-.toMatchSnapshot('filtered events');
-```
-
-### XCM Testing
-
-Test XCM (Cross-Chain Message) functionality:
-
-```typescript
-// Check UMP (Upward Message Passing) messages
-await checkUmp(api)
-  .redact()
-  .toMatchSnapshot('upward messages');
-
-// Check HRMP (Horizontal Relay-routed Message Passing) messages
-await checkHrmp(api)
-  .redact()
-  .toMatchSnapshot('horizontal messages');
-```
-
-### Data Format Conversion
-
-Convert data to different formats for testing:
-
-```typescript
-// Convert to human-readable format
-await check(data).toHuman().toMatchSnapshot('human readable');
-
-// Convert to hex format
-await check(data).toHex().toMatchSnapshot('hex format');
-
-// Convert to JSON format (default)
-await check(data).toJson().toMatchSnapshot('json format');
-```
-
-### Custom Transformations
-
-Apply custom transformations to your data:
-
-```typescript
-await check(data)
-  .map(value => value.filter(item => item.amount > 1000))
-  .redact()
-  .toMatchSnapshot('filtered and redacted');
-```
-
-### Resuming Network State with `--resume`
-
-When testing complex scenarios, especially with XCM interactions between networks, you may want to persist and resume
-network states.
-The `--resume` feature, used in a single chain scenario, allows you to resume from a specific block hash, block number,
-or the latest block in the database.
-
-Each network in an XCM setup can have its own database path specified in its config file. This allows independent state
-persistence and resumption for each network.
-
-In a multiple chain scenario, use a `resume:` key in the chain's `.yml` config with the hash/number of the block at
-which each chain is to resume.
-
-#### Configuration Examples
-
-In your config file (e.g., `configs/acala.yml`):
-```yaml
-endpoint: wss://acala-rpc.aca-api.network
-db: ./db-acala.sqlite  # Specify custom database path
-```
-
-Or with a specific block:
-```yaml
-endpoint: wss://rpc.ibp.network/polkadot
-db: ./db-polkadot.sqlite # Must be a different path from other networks
-```
-
-#### Using with XCM Setup
-
-When connecting multiple networks with XCM, each can have its own database from which to resume:
+YAML config file (see [configs/](configs/) for examples), every key doubles as a CLI flag:
 
 ```yaml
-# configs/polkadot.yml
-...
-db: <db-filepath>
-resume: <block-number> | <block-hash>
-...
-
-# configs/acala.yml
-db: <db-filepath>
-resume: <block-number> | <block-hash>
+endpoint: wss://hydration-rpc.n.dwellir.com # or a list for failover
+port: 8000
+block: ${env.HYDRADX_BLOCK_NUMBER} # env templating supported
+db: ./hydradx.db.sqlite # persistent storage cache
+mock-signature-host: true # accept 0xdeadbeef... fake signatures
+build-block-mode: Batch # Batch | Instant | Manual
+eth-get-logs-max-range: 10000 # 0 = unlimited
+max-memory-block-count: 500
+runtime-log-level: 0
+wasm-override: ./runtime.compact.compressed.wasm
+import-storage: # storage overrides at fork point
+  System:
+    Account: [[['5Grwva...'], { providers: 1, data: { free: '1000000000000000' } }]]
+resume: true # resume from latest block in db
 ```
+
+Environment variables:
+
+- `CHOPSTICKS_STORAGE_CACHE_MB` — shared remote-storage LRU size, default 128.
+  Process-global (all chains in an XCM setup share it), hence env rather than YAML.
+- `LOG_LEVEL` — `trace|debug|info|warn|error`.
+- `http_proxy` / `https_proxy` are respected.
+
+Useful dev RPCs once running: `dev_newBlock` (`{count, transactions, unsafeBlockHeight}`),
+`dev_setStorage`, `dev_timeTravel`, `dev_dryRun`, `dev_setHead`.
+
+## Install from source
+
+Rust ≥ 1.64 required for the wasm executor.
 
 ```bash
-# Start XCM setup with custom database paths
-npx @acala-network/chopsticks@latest xcm \
-  -r configs/polkadot.yml \
-  -p configs/acala.yml
+git clone --recurse-submodules https://github.com/galacticcouncil/chopsticks.git && cd chopsticks
+yarn
+yarn build-wasm # don't use IDE built-in wasm build tools
+yarn build
+npx tsx packages/chopsticks/src/cli.ts -c configs/hydradx.yml # run from source
 ```
 
-### Single network resumption
+Note: `bun` is not recommended — its WASM support can hang the instance.
 
-You can also pass a block number or hash to resume from a specific block:
+## Upstream documentation
 
-```bash
-npx @acala-network/chopsticks@latest -c configs/acala.yml --resume=12345
-```
+Unchanged upstream features are documented in the
+[upstream wiki](https://github.com/AcalaNetwork/chopsticks/wiki) and repo:
 
-## Testing big migrations
-
-When testing migrations with lots of keys, you may want to fetch and cache some storages.
-
-There are two ways to fetch storages.
-
-The first way is to use a config file with a `prefetch-storages` section:
-
-```yml
-prefetch-storages:
-  - '0x123456' # fetch all storages with this prefix
-  - Balances # fetch all storages under Balances pallet
-  - Tokens.Accounts # fetch all storages under Tokens.Accounts stroage
-  - System: Account # fetch all storages under System.Account stroage
-  - Tokens:
-      Accounts: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY] # fetch all storages for Tokens.Accounts(Alice)
-  - Tokens.Accounts: [5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY, { token: DOT }] # fetch this particular storage
-```
-
-When you starts chopsticks, it will fetch these storages in background.
-
-Please note that only the formats mentioned above are supported for config files.
-
-The second way is use `fetch-storages` subcommand to only fetch and cache storages:
-
-```sh
-npx @acala-network/chopsticks@latest fetch-storages 0x123456 Balances Tokens.Accounts
-	--endpoint=wss://acala-rpc-0.aca-api.network
-	--block=<blockhash> # default to latest block
-	--db=acala.sqlite
-```
-
-The subcommand arguments could be:
-- hex: fetch all storages with this prefix
-- PalletName: fetch all storages for this pallet
-- PalletName.StorageName: fetch all storages for this storage
-
-Please note that for both ways, fetched storages will be saved in the sqlite file specified by `--db` option (`db: ./acala.sqlite` in a config file), if not provided, it will default to `./db-{network}-{block}.sqlite`.
-
-In a multi-chain scenario, do not pass `--db` flags to each chain, and instead insert a `db:` key in each config with
-the appropriate value.
-
-## Try-Runtime CLI
-
-Documentation can be found [here](packages/chopsticks/src/plugins/try-runtime/README.md)
+- [XCM multichain testing & `@acala-network/chopsticks-testing`](https://github.com/AcalaNetwork/chopsticks#testing-with-acala-networkchopsticks-testing)
+- [run-block / storage-diff plugins](packages/chopsticks/src/plugins/run-block/)
+- [EVM+ transaction tracing](packages/chopsticks/src/plugins/trace-transaction/README.md)
+- [try-runtime CLI](packages/chopsticks/src/plugins/try-runtime/README.md)
+- [fetch-storages / prefetching big migrations](https://github.com/AcalaNetwork/chopsticks#testing-big-migrations)
 
 ## FAQ
 
-### What is mocked? What are things that could work with chopsticks, but still fail in production?
-
-Generally, anything that involves something more than onchain STF `new_state = f(old_state)` are not guaranteed to work in production.
-In practice, here is an incomplete list that I can think of:
-
-- mocked tx pool
-- no real block finalization
-- mocked inherents
-- simulated XCM channels
-
-### How to change a pallet constant in chopsticks?
-
-You cannot change runtime constants in chopsticks, you have to edit and build a new runtime, and use `wasm-override` with the new wasm.
-
-### Storage override of value type `()`
-
-You can use `0x` for empty values, for example:
-
-```yaml
-Whitelist:
-    WhitelistedCall:
-      - - - '0xe284be84dcfaf714ef2b7717b54914632406f2c17d8203d3268e4c4ca68fa144'
-        - 0x
-```
+- **What is mocked?** Tx pool, inherents, block finalization, and XCM channels are
+  simulated — anything beyond the onchain state transition `new_state = f(old_state)`
+  may behave differently in production.
+- **Change a pallet constant?** Not possible at runtime — build a new wasm and use
+  `wasm-override`.
+- **The fork OOMs anyway?** Raise `NODE_OPTIONS=--max-old-space-size=...` and lower
+  `CHOPSTICKS_STORAGE_CACHE_MB` / `max-memory-block-count`, then open an issue with the
+  workload — bounded memory under sustained load is a feature of this fork, regressions
+  are bugs.
+- **dApp boot is still slow on first load?** A cold fork of a large-state chain pays
+  one upstream round-trip per key page plus wasm execution per runtime call. Use a
+  persistent `db:` (second boot reads from sqlite), consider `prefetch-storages:` for
+  hot prefixes (e.g. `[AssetRegistry, Omnipool, XYK, Stableswap]`), and bump your
+  client's RPC timeout above the default 60s for the first cold pass.
