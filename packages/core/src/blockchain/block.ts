@@ -48,6 +48,13 @@ export class Block {
 
   #baseStorage: StorageLayerProvider
   #storages: StorageLayer[]
+  /**
+   * Monotonic counter bumped on every storage-layer mutation (push/pop/reset/
+   * setWasm). Layer *count* alone is ambiguous — a pop followed by a push
+   * yields the same depth with different state — so the runtime-call cache
+   * keys on this instead.
+   */
+  #storageEpoch = 0
 
   constructor(
     chain: Blockchain,
@@ -201,6 +208,7 @@ export class Block {
    * Push a layer to the storage stack.
    */
   pushStorageLayer(): StorageLayer {
+    this.#storageEpoch++
     const layer = new StorageLayer(this.storage)
     this.#storages.push(layer)
     return layer
@@ -210,6 +218,7 @@ export class Block {
    * Pop a layer from the storage stack.
    */
   popStorageLayer(): void {
+    this.#storageEpoch++
     this.#storages.pop()
   }
 
@@ -221,6 +230,7 @@ export class Block {
    * underlying block.
    */
   resetStorageLayers(targetCount: number): void {
+    if (this.#storages.length > targetCount) this.#storageEpoch++
     while (this.#storages.length > targetCount) this.#storages.pop()
   }
 
@@ -333,6 +343,17 @@ export class Block {
     mockSigantureHostOverride = false,
     lockToken?: WorkerLockToken,
   ): Promise<TaskCallResponse> {
+    // runtime execution is deterministic per (state, method, args) — replayed
+    // calls skip the wasm executor entirely. Disabled with an offchain worker,
+    // whose separate storage can make calls non-deterministic.
+    const epochAtStart = this.#storageEpoch
+    const cacheKey = `${this.hash}:${epochAtStart}:${mockSigantureHostOverride}:${method}:${args.join(',')}`
+    const cacheable = !this.#chain.offchainWorker
+    if (cacheable) {
+      const cached = this.#chain.runtimeCallCache.get(cacheKey)
+      if (cached) return cached
+    }
+
     const wasm = await this.wasm
     // a fresh token identifies this call chain so that any nested call it triggers
     // through its own callback (e.g. an offchain worker validating a submitted
@@ -357,6 +378,10 @@ export class Block {
         for (const [key, value] of response.Call.offchainStorageDiff) {
           this.chain.offchainWorker.set(key, value)
         }
+      }
+
+      if (cacheable && this.#storageEpoch === epochAtStart) {
+        this.#chain.runtimeCallCache.set(cacheKey, response.Call)
       }
 
       return response.Call

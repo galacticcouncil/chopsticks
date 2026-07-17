@@ -88,6 +88,9 @@ export class RemoteStorageLayer implements StorageLayerProvider {
       return cached === MISSING ? undefined : cached
     }
 
+    const inflight = this.#inflight.get(key)
+    if (inflight) return inflight
+
     if (this.#db) {
       const res = await this.#db.queryStorage(this.#at as HexString, key as HexString)
       if (res) {
@@ -95,9 +98,6 @@ export class RemoteStorageLayer implements StorageLayerProvider {
         return res.value ?? undefined
       }
     }
-
-    const inflight = this.#inflight.get(key)
-    if (inflight) return inflight
 
     logger.trace({ at: this.#at, key }, 'RemoteStorageLayer get')
     const fetch = this.#api
@@ -117,14 +117,24 @@ export class RemoteStorageLayer implements StorageLayerProvider {
   async getMany(keys: string[], _cache: boolean): Promise<StorageValue[]> {
     const result: StorageValue[] = []
     let pending: Array<{ key: string; idx: number }> = []
+    const inflightWaits: Promise<void>[] = []
 
     keys.forEach((key, idx) => {
       const cached = remoteValueCache.get(`${this.#at}:${key}`)
       if (cached !== undefined) {
         result[idx] = cached === MISSING ? undefined : cached
-      } else {
-        pending.push({ key, idx })
+        return
       }
+      const inflight = this.#inflight.get(key)
+      if (inflight) {
+        inflightWaits.push(
+          inflight.then((val) => {
+            result[idx] = val
+          }),
+        )
+        return
+      }
+      pending.push({ key, idx })
     })
 
     if (this.#db && pending.length) {
@@ -165,7 +175,41 @@ export class RemoteStorageLayer implements StorageLayerProvider {
       }
     }
 
+    await Promise.all(inflightWaits)
     return result
+  }
+
+  /**
+   * Batch-fetch values for freshly-discovered keys and stage them in the
+   * shared value cache (and db). Registered in `#inflight` so concurrent
+   * `get`/`getMany` calls for the same keys await the batch instead of
+   * re-fetching key by key — full map iteration (`.entries()`) issues
+   * exactly one upstream round-trip per key page this way (issue #9).
+   */
+  #prefetchValues(prefix: HexString, keys: HexString[]): void {
+    const newKeys = keys.filter((key) => !this.#inflight.has(key) && !remoteValueCache.has(`${this.#at}:${key}`))
+    if (newKeys.length === 0) return
+
+    const batch = this.#api.getStorageBatch(prefix, newKeys, this.#at).then((data) => {
+      const values = new Map(data)
+      for (const [key, value] of data) {
+        this.#db?.saveStorage(this.#at, key, value)
+        remoteValueCache.set(`${this.#at}:${key}`, value ?? MISSING)
+      }
+      return values
+    })
+
+    for (const key of newKeys) {
+      const fetch: Promise<StorageValue> = batch
+        .then((values) => values.get(key) ?? undefined)
+        .finally(() => {
+          if (this.#inflight.get(key) === fetch) this.#inflight.delete(key)
+        })
+      // swallow batch failures here — the keys fall out of #inflight and any
+      // actual reader gets the rejection (or retries) through its own await
+      fetch.catch(() => {})
+      this.#inflight.set(key, fetch)
+    }
   }
 
   async findNextKey(prefix: string, startKey: string, _knownBest?: string): Promise<string | undefined> {
@@ -240,21 +284,18 @@ export class RemoteStorageLayer implements StorageLayerProvider {
         break
       }
 
-      if (this.#db) {
-        const newBatch: HexString[] = await Promise.all(
-          batch.map((key) => this.#db!.queryStorage(this.#at, key).then((r) => (r ? null : key))),
-        ).then((rs) => rs.filter((k): k is HexString => k !== null))
-
-        if (newBatch.length > 0) {
-          // batch fetch storage values and save to db, they may be used later
-          this.#api.getStorageBatch(prefix as HexString, newBatch, this.#at).then((storage) => {
-            for (const [key, value] of storage) {
-              this.#db?.saveStorage(this.#at, key, value)
-            }
-          })
+      {
+        // stage values for the discovered keys — clients iterating a map
+        // (`.entries()`) will ask for them within milliseconds
+        let newBatch = batch as HexString[]
+        if (this.#db) {
+          newBatch = await Promise.all(
+            newBatch.map((key) => this.#db!.queryStorage(this.#at, key).then((r) => (r ? null : key))),
+          ).then((rs) => rs.filter((k): k is HexString => k !== null))
         }
+        this.#prefetchValues(prefix as HexString, newBatch)
 
-        if (startKeyEqualsPrefix) {
+        if (this.#db && startKeyEqualsPrefix) {
           allFetchedKeys.push(...(batch as HexString[]))
           fetchedNewKeys = true
         }

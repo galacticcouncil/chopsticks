@@ -10,13 +10,14 @@ import { objectSpread, u8aConcat, u8aToHex } from '@polkadot/util'
 import type { HexString } from '@polkadot/util/types'
 import { blake2AsHex, xxhashAsHex } from '@polkadot/util-crypto'
 import _ from 'lodash'
+import { LRUCache } from 'lru-cache'
 
 import type { Api } from '../api.js'
 import type { Database } from '../database.js'
 import { defaultLogger } from '../logger.js'
 import { OffchainWorker } from '../offchain.js'
 import { compactHex } from '../utils/index.js'
-import type { RuntimeVersion, WorkerLockToken } from '../wasm-executor/index.js'
+import type { RuntimeVersion, TaskCallResponse, WorkerLockToken } from '../wasm-executor/index.js'
 import { Block } from './block.js'
 import { dryRunExtrinsic, dryRunExtrinsicsAmortized, dryRunInherents } from './block-builder.js'
 import { HeadState } from './head-state.js'
@@ -137,6 +138,22 @@ export class Blockchain {
       return registry
     },
   )
+
+  /**
+   * Cache of runtime-call results. Runtime execution is deterministic — the
+   * same block state, method, and arguments always produce the same result —
+   * so replayed calls (dApp boot retries, repeated router-graph builds, wallet
+   * polling) can skip wasm execution entirely (issue #9). Entries are keyed by
+   * block hash + the block's storage epoch (bumped on every layer push/pop),
+   * so `dev_setStorage`, snapshot restore, and block building can never be
+   * served stale results.
+   */
+  readonly runtimeCallCache = new LRUCache<string, TaskCallResponse>({
+    max: 5_000,
+    maxSize: 64 * 1024 * 1024,
+    sizeCalculation: (resp) =>
+      resp.result.length + resp.storageDiff.reduce((s, [k, v]) => s + k.length + (v?.length ?? 0), 0) + 128,
+  })
 
   // first arg is used as cache key. Decorating metadata (expandMetadata) costs
   // several MB of objects per call — doing it per Block instead of per runtime
