@@ -149,8 +149,8 @@ export class Blockchain {
    * served stale results.
    */
   readonly runtimeCallCache = new LRUCache<string, TaskCallResponse>({
-    max: 5_000,
-    maxSize: 64 * 1024 * 1024,
+    max: 50_000,
+    maxSize: 640 * 1024 * 1024,
     sizeCalculation: (resp) =>
       resp.result.length + resp.storageDiff.reduce((s, [k, v]) => s + k.length + (v?.length ?? 0), 0) + 128,
   })
