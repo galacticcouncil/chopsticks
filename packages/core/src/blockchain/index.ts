@@ -62,7 +62,7 @@ export interface Options {
   saveBlocks?: boolean
   /** Max eth_getLogs block range. 0 means unlimited. Default 10_000. */
   ethGetLogsMaxRange?: number
-  /** Runtime-call result cache size in MB. 0 disables the cache. Default 640. */
+  /** Runtime-call result cache size in MB. 0 disables the cache. Default 6400. */
   runtimeCallCacheMB?: number
 }
 
@@ -119,6 +119,23 @@ export class Blockchain {
   readonly saveBlocks: boolean
   /** Max eth_getLogs block range. 0 means unlimited. */
   readonly ethGetLogsMaxRange: number
+
+  #lastBuildReadKeys: string[] = []
+
+  /**
+   * Storage keys read by the most recent block build. The next build
+   * prefetches these in one batched round-trip before executing the block
+   * lifecycle — consecutive builds touch a near-identical key set (#10).
+   */
+  get lastBuildReadKeys(): string[] {
+    return this.#lastBuildReadKeys
+  }
+
+  set lastBuildReadKeys(keys: string[]) {
+    // cap as a pathology guard — a build that read a whole huge map shouldn't
+    // turn every subsequent build into a giant prefetch
+    this.#lastBuildReadKeys = keys.slice(0, 100_000)
+  }
 
   // first arg is used as cache key
   readonly #registryBuilder = _.memoize(
@@ -182,7 +199,7 @@ export class Blockchain {
     processQueuedMessages = true,
     saveBlocks = true,
     ethGetLogsMaxRange = 10_000,
-    runtimeCallCacheMB = 640,
+    runtimeCallCacheMB = 6400,
   }: Options) {
     this.api = api
     this.db = db

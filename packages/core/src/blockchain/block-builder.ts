@@ -153,6 +153,10 @@ const initNewBlock = async (
     extrinsics: [],
     storage: storageLayer ?? head.storage,
   })
+  // jump the executor queue ahead of RPC traffic so a busy dApp can't starve
+  // head progression, and record the read-set for the next build's prefetch (#10)
+  newBlock.callPriority = 1
+  newBlock.readCollector = new Set()
 
   {
     // override block number in storage when using unsafeBlockHeight
@@ -233,6 +237,19 @@ export const buildBlock = async (
     },
     `${await head.chain.api.getSystemChain()} building #${newBlockNumber.toLocaleString()}`,
   )
+
+  // Warm the storage caches with everything the previous build read, in one
+  // batched round-trip, before the runtime starts requesting keys one at a
+  // time through the executor callback. A cold Hydration block lifecycle
+  // otherwise pays an upstream RTT per key (#10).
+  const readSet = head.chain.lastBuildReadKeys
+  if (readSet.length > 0) {
+    try {
+      await head.getMany(readSet)
+    } catch (e) {
+      logger.debug({ err: e }, 'Failed to prefetch previous build read-set')
+    }
+  }
 
   let layer: StorageLayer | undefined
   // apply ump via storage override hack
@@ -365,6 +382,10 @@ export const buildBlock = async (
     ...header.toJSON(),
     extrinsicsRoot: mockExtrinsicRoot,
   })
+
+  if (newBlock.readCollector) {
+    head.chain.lastBuildReadKeys = [...newBlock.readCollector]
+  }
 
   const storageDiff = await newBlock.storageDiff()
 

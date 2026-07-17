@@ -56,6 +56,20 @@ export class Block {
    */
   #storageEpoch = 0
 
+  /**
+   * Executor-queue priority for this block's runtime calls. Block building
+   * sets this to 1 on its work-in-progress block so head progression jumps
+   * ahead of queued RPC traffic instead of interleaving with it (#10).
+   */
+  callPriority = 0
+
+  /**
+   * When set, every storage key the executor reads during this block's
+   * runtime calls is recorded here. Block building uses it to capture the
+   * build read-set, which the next build prefetches in one batch (#10).
+   */
+  readCollector?: Set<string>
+
   constructor(
     chain: Blockchain,
     public readonly number: number,
@@ -371,6 +385,7 @@ export class Block {
       taskHandler(this, token),
       mockSigantureHostOverride,
       token,
+      this.callPriority,
     )
     if ('Call' in response) {
       if (this.chain.offchainWorker) {

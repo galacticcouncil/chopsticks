@@ -57,7 +57,11 @@ Advantages over upstream `@acala-network/chopsticks`:
   so repeated `state_call`s (dApp boot retries, router-graph rebuilds, wallet polling)
   return from cache in ~1ms instead of re-executing wasm. Invalidated on any storage
   mutation (`dev_setStorage`, block building, snapshot restore); sized with
-  `runtime-call-cache-mb` (default 640, `0` disables).
+  `runtime-call-cache-mb` (default 6400, `0` disables).
+- **Head progression under load** → block building jumps the wasm-executor queue ahead
+  of queued RPC traffic and batch-prefetches the previous build's storage read-set, so
+  empty blocks build in ~2s idle and ~5s under a full dApp boot storm instead of 40s+.
+  (First build on a fresh fork point is still slow — its read-set is unknowable.)
 - **Executor hardening** → zstd-compressed runtimes are decompressed once on the main
   thread (no ruzstd OOM panics), executor worker errors no longer crash the whole
   process, and concurrent wasm calls are serialized instead of racing.
@@ -107,7 +111,7 @@ db: ./hydradx.db.sqlite # persistent storage cache
 mock-signature-host: true # accept 0xdeadbeef... fake signatures
 build-block-mode: Batch # Batch | Instant | Manual
 eth-get-logs-max-range: 10000 # 0 = unlimited
-runtime-call-cache-mb: 640 # 0 = disabled
+runtime-call-cache-mb: 6400 # 0 = disabled
 max-memory-block-count: 500
 runtime-log-level: 0
 wasm-override: ./runtime.compact.compressed.wasm

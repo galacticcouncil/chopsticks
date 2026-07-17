@@ -177,8 +177,38 @@ const callWorker = <T>(worker: ExecutorWorker, promise: Promise<T>): Promise<T> 
  */
 export type WorkerLockToken = symbol
 
-let workerLockQueue: Promise<void> = Promise.resolve()
 let currentWorkerLockHolder: WorkerLockToken | undefined
+let workerLockHeld = false
+let workerLockWaiterSeq = 0
+const workerLockWaiters: { resolve: () => void; priority: number; seq: number }[] = []
+
+const acquireWorkerLock = (priority: number): Promise<void> => {
+  if (!workerLockHeld) {
+    workerLockHeld = true
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => {
+    workerLockWaiters.push({ resolve, priority, seq: workerLockWaiterSeq++ })
+  })
+}
+
+const releaseWorkerLock = (): void => {
+  if (workerLockWaiters.length === 0) {
+    workerLockHeld = false
+    return
+  }
+  // highest priority first, FIFO within a priority
+  let best = 0
+  for (let i = 1; i < workerLockWaiters.length; i++) {
+    const w = workerLockWaiters[i]
+    const b = workerLockWaiters[best]
+    if (w.priority > b.priority || (w.priority === b.priority && w.seq < b.seq)) {
+      best = i
+    }
+  }
+  const [next] = workerLockWaiters.splice(best, 1)
+  next.resolve()
+}
 
 /**
  * The compiled wasm executor module keeps JS-side mutable glue state (string
@@ -189,23 +219,26 @@ let currentWorkerLockHolder: WorkerLockToken | undefined
  * serializes every call into a given worker so only one call's lifetime is ever
  * in flight, while letting a call's own nested sub-calls (sharing its token)
  * bypass the queue so they don't deadlock against it.
+ *
+ * `priority` breaks FIFO: higher-priority callers (block building) jump ahead
+ * of queued RPC traffic, so head progression isn't starved by a busy dApp
+ * (galacticcouncil/chopsticks#10). Same-priority callers stay FIFO.
  */
-export const runExclusive = async <T>(fn: () => Promise<T>, holderToken?: WorkerLockToken): Promise<T> => {
+export const runExclusive = async <T>(
+  fn: () => Promise<T>,
+  holderToken?: WorkerLockToken,
+  priority = 0,
+): Promise<T> => {
   if (holderToken && holderToken === currentWorkerLockHolder) {
     return fn()
   }
-  const myTurn = workerLockQueue
-  let release!: () => void
-  workerLockQueue = new Promise((resolve) => {
-    release = resolve
-  })
-  await myTurn
+  await acquireWorkerLock(priority)
   currentWorkerLockHolder = holderToken ?? Symbol('worker-lock')
   try {
     return await fn()
   } finally {
     currentWorkerLockHolder = undefined
-    release()
+    releaseWorkerLock()
   }
 }
 
@@ -230,9 +263,13 @@ export const calculateStateRoot = async (
   return runExclusive(() => callWorker(worker, worker.remote.calculateStateRoot(entries, trie_version)))
 }
 
-export const decodeProof = async (trieRootHash: HexString, nodes: HexString[]) => {
+export const decodeProof = async (trieRootHash: HexString, nodes: HexString[], priority = 0) => {
   const worker = await getWorker()
-  const result = await runExclusive(() => callWorker(worker, worker.remote.decodeProof(trieRootHash, nodes)))
+  const result = await runExclusive(
+    () => callWorker(worker, worker.remote.decodeProof(trieRootHash, nodes)),
+    undefined,
+    priority,
+  )
   return result.reduce(
     (accum, [key, value]) => {
       accum[key] = value
@@ -242,10 +279,12 @@ export const decodeProof = async (trieRootHash: HexString, nodes: HexString[]) =
   )
 }
 
-export const createProof = async (nodes: HexString[], updates: [HexString, HexString | null][]) => {
+export const createProof = async (nodes: HexString[], updates: [HexString, HexString | null][], priority = 0) => {
   const worker = await getWorker()
-  const [trieRootHash, newNodes] = await runExclusive(() =>
-    callWorker(worker, worker.remote.createProof(nodes, updates)),
+  const [trieRootHash, newNodes] = await runExclusive(
+    () => callWorker(worker, worker.remote.createProof(nodes, updates)),
+    undefined,
+    priority,
   )
   return { trieRootHash, nodes: newNodes }
 }
@@ -257,6 +296,7 @@ export const runTask = async (
   callback: JsCallback = emptyTaskHandler,
   overrideMockSignatureHost = false,
   lockToken?: WorkerLockToken,
+  priority = 0,
 ) => {
   const taskId = nextTaskId++
   const task2 = {
@@ -275,6 +315,7 @@ export const runTask = async (
   const response = await runExclusive(
     () => callWorker(worker, worker.remote.runTask(task2, Comlink.proxy(callback)) as Promise<TaskResponse>),
     lockToken,
+    priority,
   )
   if ('Call' in response) {
     logger.trace(truncate(response.Call), `taskResponse #${taskId}`)
@@ -286,7 +327,10 @@ export const runTask = async (
 
 export const taskHandler = (block: Block, lockToken?: WorkerLockToken): JsCallback => {
   return {
-    getStorage: async (key: HexString) => block.get(key),
+    getStorage: async (key: HexString) => {
+      block.readCollector?.add(key)
+      return block.get(key)
+    },
     getNextKey: async (prefix: HexString, key: HexString) => {
       const [nextKey] = await block.getKeysPaged({
         prefix: prefix.length === 2 /** 0x */ ? key.slice(0, PREFIX_LENGTH) : prefix,

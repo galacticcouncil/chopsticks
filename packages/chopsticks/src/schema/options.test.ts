@@ -131,7 +131,7 @@ it('get yargs options from zod schema', () => {
       "runtime-call-cache-mb": {
         "choices": undefined,
         "demandOption": false,
-        "description": "Runtime-call result cache size in MB. 0 disables the cache. Default 640.",
+        "description": "Runtime-call result cache size in MB. 0 disables the cache. Default 6400.",
         "type": "number",
       },
       "runtime-log-level": {

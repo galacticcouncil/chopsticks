@@ -94,7 +94,7 @@ export const configSchema = z.object({
     .optional(),
   'runtime-call-cache-mb': z
     .number({
-      description: 'Runtime-call result cache size in MB. 0 disables the cache. Default 640.',
+      description: 'Runtime-call result cache size in MB. 0 disables the cache. Default 6400.',
     })
     .min(0)
     .optional(),

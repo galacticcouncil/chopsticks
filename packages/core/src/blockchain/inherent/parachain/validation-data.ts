@@ -120,6 +120,7 @@ export class SetValidationData implements InherentProvider {
     const decoded = await decodeProof(
       extrinsic.validationData.relayParentStorageRoot,
       extrinsic.relayChainState.trieNodes,
+      newBlock.callPriority,
     )
 
     const slotDuration = await getSlotDuration(newBlock)
@@ -280,7 +281,11 @@ export class SetValidationData implements InherentProvider {
       }
     }
 
-    const { trieRootHash, nodes } = await createProof(extrinsic.relayChainState.trieNodes, newEntries)
+    const { trieRootHash, nodes } = await createProof(
+      extrinsic.relayChainState.trieNodes,
+      newEntries,
+      newBlock.callPriority,
+    )
 
     const argsLengh = meta.tx.parachainSystem.setValidationData.meta.args.length
 
