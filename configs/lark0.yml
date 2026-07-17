@@ -1,0 +1,5 @@
+endpoint: wss://node0.lark.hydration.cloud
+mock-signature-host: true
+db: ./lark0.db.sqlite
+runtime-log-level: 0
+resume: true

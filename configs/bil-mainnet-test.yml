@@ -1,0 +1,4 @@
+endpoint: wss://hydration-rpc.n.dwellir.com
+mock-signature-host: true
+db: ./bil-mainnet-test.db.sqlite
+runtime-log-level: 5
