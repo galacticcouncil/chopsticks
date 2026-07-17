@@ -180,7 +180,18 @@ export type WorkerLockToken = symbol
 let currentWorkerLockHolder: WorkerLockToken | undefined
 let workerLockHeld = false
 let workerLockWaiterSeq = 0
-const workerLockWaiters: { resolve: () => void; priority: number; seq: number }[] = []
+const workerLockWaiters: { resolve: () => void; priority: number; seq: number; enqueuedAt: number }[] = []
+
+/**
+ * Anti-starvation aging: a waiter's effective priority rises by 1 for every
+ * AGING_MS it spends queued. Without this, Instant build mode under a steady
+ * stream of transactions generates back-to-back priority-1 block builds that
+ * starve priority-0 reads (eth_call etc.) forever — the wedge in
+ * galacticcouncil/chopsticks#11. With it, block building still wins the queue
+ * short-term, but any read waiting longer than one aging step outranks fresh
+ * build calls and gets through.
+ */
+const WORKER_LOCK_AGING_MS = 10_000
 
 const acquireWorkerLock = (priority: number): Promise<void> => {
   if (!workerLockHeld) {
@@ -188,7 +199,7 @@ const acquireWorkerLock = (priority: number): Promise<void> => {
     return Promise.resolve()
   }
   return new Promise((resolve) => {
-    workerLockWaiters.push({ resolve, priority, seq: workerLockWaiterSeq++ })
+    workerLockWaiters.push({ resolve, priority, seq: workerLockWaiterSeq++, enqueuedAt: Date.now() })
   })
 }
 
@@ -197,12 +208,17 @@ const releaseWorkerLock = (): void => {
     workerLockHeld = false
     return
   }
-  // highest priority first, FIFO within a priority
+  // highest effective priority first, FIFO within a priority
+  const now = Date.now()
+  const effective = (w: (typeof workerLockWaiters)[number]) =>
+    w.priority + Math.floor((now - w.enqueuedAt) / WORKER_LOCK_AGING_MS)
   let best = 0
   for (let i = 1; i < workerLockWaiters.length; i++) {
     const w = workerLockWaiters[i]
     const b = workerLockWaiters[best]
-    if (w.priority > b.priority || (w.priority === b.priority && w.seq < b.seq)) {
+    const we = effective(w)
+    const be = effective(b)
+    if (we > be || (we === be && w.seq < b.seq)) {
       best = i
     }
   }

@@ -61,7 +61,9 @@ Advantages over upstream `@acala-network/chopsticks`:
 - **Head progression under load** → block building jumps the wasm-executor queue ahead
   of queued RPC traffic and batch-prefetches the previous build's storage read-set, so
   empty blocks build in ~2s idle and ~5s under a full dApp boot storm instead of 40s+.
-  (First build on a fresh fork point is still slow — its read-set is unknowable.)
+  Anti-starvation aging guarantees reads still get through under continuous Instant-mode
+  block production. (First build on a fresh fork point is still slow — its read-set is
+  unknowable.)
 - **Executor hardening** → zstd-compressed runtimes are decompressed once on the main
   thread (no ruzstd OOM panics), executor worker errors no longer crash the whole
   process, and concurrent wasm calls are serialized instead of racing.
