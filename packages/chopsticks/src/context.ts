@@ -61,6 +61,7 @@ export const setupContext = async (argv: Config, overrideParent = false) => {
     saveBlocks: argv['save-blocks'],
     rpcTimeout: argv['rpc-timeout'],
     ethGetLogsMaxRange: argv['eth-get-logs-max-range'],
+    runtimeCallCacheMB: argv['runtime-call-cache-mb'],
     hooks: {
       apiFetching,
     },

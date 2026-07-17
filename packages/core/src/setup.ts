@@ -28,6 +28,7 @@ export type SetupOptions = {
   saveBlocks?: boolean
   rpcTimeout?: number
   ethGetLogsMaxRange?: number
+  runtimeCallCacheMB?: number
   hooks?: {
     apiFetching?: () => void
   }
@@ -112,6 +113,7 @@ export const setup = async (options: SetupOptions) => {
     processQueuedMessages: opts.processQueuedMessages,
     saveBlocks: opts.saveBlocks,
     ethGetLogsMaxRange: opts.ethGetLogsMaxRange,
+    runtimeCallCacheMB: opts.runtimeCallCacheMB,
   })
 
   if (opts.genesis) {

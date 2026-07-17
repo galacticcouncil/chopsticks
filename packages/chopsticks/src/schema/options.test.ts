@@ -128,6 +128,12 @@ it('get yargs options from zod schema', () => {
         "description": "RPC timeout in milliseconds",
         "type": "number",
       },
+      "runtime-call-cache-mb": {
+        "choices": undefined,
+        "demandOption": false,
+        "description": "Runtime-call result cache size in MB. 0 disables the cache. Default 640.",
+        "type": "number",
+      },
       "runtime-log-level": {
         "choices": undefined,
         "demandOption": false,

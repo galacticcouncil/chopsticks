@@ -348,9 +348,9 @@ export class Block {
     // whose separate storage can make calls non-deterministic.
     const epochAtStart = this.#storageEpoch
     const cacheKey = `${this.hash}:${epochAtStart}:${mockSigantureHostOverride}:${method}:${args.join(',')}`
-    const cacheable = !this.#chain.offchainWorker
-    if (cacheable) {
-      const cached = this.#chain.runtimeCallCache.get(cacheKey)
+    const callCache = this.#chain.offchainWorker ? undefined : this.#chain.runtimeCallCache
+    if (callCache) {
+      const cached = callCache.get(cacheKey)
       if (cached) return cached
     }
 
@@ -380,8 +380,8 @@ export class Block {
         }
       }
 
-      if (cacheable && this.#storageEpoch === epochAtStart) {
-        this.#chain.runtimeCallCache.set(cacheKey, response.Call)
+      if (callCache && this.#storageEpoch === epochAtStart) {
+        callCache.set(cacheKey, response.Call)
       }
 
       return response.Call

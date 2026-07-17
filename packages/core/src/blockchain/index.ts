@@ -62,6 +62,8 @@ export interface Options {
   saveBlocks?: boolean
   /** Max eth_getLogs block range. 0 means unlimited. Default 10_000. */
   ethGetLogsMaxRange?: number
+  /** Runtime-call result cache size in MB. 0 disables the cache. Default 640. */
+  runtimeCallCacheMB?: number
 }
 
 /**
@@ -147,13 +149,10 @@ export class Blockchain {
    * block hash + the block's storage epoch (bumped on every layer push/pop),
    * so `dev_setStorage`, snapshot restore, and block building can never be
    * served stale results.
+   *
+   * Sized via the `runtime-call-cache-mb` option; `undefined` when disabled.
    */
-  readonly runtimeCallCache = new LRUCache<string, TaskCallResponse>({
-    max: 50_000,
-    maxSize: 640 * 1024 * 1024,
-    sizeCalculation: (resp) =>
-      resp.result.length + resp.storageDiff.reduce((s, [k, v]) => s + k.length + (v?.length ?? 0), 0) + 128,
-  })
+  readonly runtimeCallCache: LRUCache<string, TaskCallResponse> | undefined
 
   // first arg is used as cache key. Decorating metadata (expandMetadata) costs
   // several MB of objects per call — doing it per Block instead of per runtime
@@ -183,6 +182,7 @@ export class Blockchain {
     processQueuedMessages = true,
     saveBlocks = true,
     ethGetLogsMaxRange = 10_000,
+    runtimeCallCacheMB = 640,
   }: Options) {
     this.api = api
     this.db = db
@@ -207,6 +207,17 @@ export class Blockchain {
     this.processQueuedMessages = processQueuedMessages
     this.saveBlocks = saveBlocks
     this.ethGetLogsMaxRange = ethGetLogsMaxRange
+    this.runtimeCallCache =
+      runtimeCallCacheMB > 0
+        ? new LRUCache<string, TaskCallResponse>({
+            // ~80 entries per MB mirrors the 50k/640MB default ratio; maxSize
+            // (approximate bytes) is the real bound
+            max: runtimeCallCacheMB * 80,
+            maxSize: runtimeCallCacheMB * 1024 * 1024,
+            sizeCalculation: (resp) =>
+              resp.result.length + resp.storageDiff.reduce((s, [k, v]) => s + k.length + (v?.length ?? 0), 0) + 128,
+          })
+        : undefined
   }
 
   #registerBlock(block: Block) {
