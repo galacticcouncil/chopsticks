@@ -1,6 +1,5 @@
-import { Metadata, type TypeRegistry } from '@polkadot/types'
+import type { TypeRegistry } from '@polkadot/types'
 import type { Header } from '@polkadot/types/interfaces'
-import { expandMetadata } from '@polkadot/types/metadata'
 import type { DecoratedMeta } from '@polkadot/types/metadata/decorate/types'
 import type { StorageEntry } from '@polkadot/types/primitive/types'
 import { hexToU8a, stringToHex } from '@polkadot/util'
@@ -231,6 +230,19 @@ export class Block {
   }
 
   /**
+   * Drop the read-through caches accumulated in this block's storage layers
+   * while it served reads (runtime calls cache every touched key into the top
+   * layer). Writes — the actual block diff — are untouched, so this is purely
+   * a memory release; subsequent reads walk down to ancestors / the remote
+   * layer again.
+   */
+  clearStorageReadCache(): void {
+    for (const layer of this.#storages) {
+      layer.clearReadCache()
+    }
+  }
+
+  /**
    * Get storage diff.
    */
   async storageDiff(): Promise<Record<HexString, HexString | null>> {
@@ -303,10 +315,11 @@ export class Block {
 
   get meta(): Promise<DecoratedMeta> {
     if (!this.#meta) {
-      this.#meta = Promise.all([this.registry, this.metadata]).then(([registry, metadataStr]) => {
-        const metadata = new Metadata(registry, metadataStr)
-        return expandMetadata(registry, metadata)
-      })
+      // shared per runtime version via the chain-level cache — decorating
+      // metadata per block is prohibitively expensive memory-wise
+      this.#meta = Promise.all([this.metadata, this.runtimeVersion]).then(([metadataStr, version]) =>
+        this.#chain.buildMeta(metadataStr, version),
+      )
     }
     return this.#meta
   }

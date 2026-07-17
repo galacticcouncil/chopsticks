@@ -50,6 +50,12 @@ it('get yargs options from zod schema', () => {
         "description": "Endpoint to connect to",
         "type": "string",
       },
+      "eth-get-logs-max-range": {
+        "choices": undefined,
+        "demandOption": false,
+        "description": "Max eth_getLogs block range. 0 means unlimited. Default 10000.",
+        "type": "number",
+      },
       "genesis": {
         "choices": undefined,
         "demandOption": false,

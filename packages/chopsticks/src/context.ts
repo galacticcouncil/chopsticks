@@ -60,6 +60,7 @@ export const setupContext = async (argv: Config, overrideParent = false) => {
     processQueuedMessages: argv['process-queued-messages'],
     saveBlocks: argv['save-blocks'],
     rpcTimeout: argv['rpc-timeout'],
+    ethGetLogsMaxRange: argv['eth-get-logs-max-range'],
     hooks: {
       apiFetching,
     },

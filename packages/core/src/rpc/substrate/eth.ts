@@ -497,8 +497,7 @@ export const eth_sendRawTransaction: Handler<[HexString], HexString> = async (co
 // only. We resolve the inner type from the entry's metadata lookup id so
 // we don't pin specific named-type versions (V3/V4 etc. differ across
 // Frontier/runtime generations).
-async function readEthStorageAtBlock(block: any, entry: any): Promise<any | null> {
-  const meta = await block.meta
+async function readEthStorageAtBlock(meta: any, block: any, entry: any): Promise<any | null> {
   const key = compactHex(entry())
   const raw = await block.get(key)
   if (!raw) return null
@@ -509,18 +508,25 @@ async function readEthStorageAtBlock(block: any, entry: any): Promise<any | null
 // Read Ethereum.currentTransactionStatuses, currentReceipts, currentBlock
 // at a given block in one go. Returns null when the chain doesn't have a
 // pallet-ethereum (i.e. non-EVM substrate chain).
+//
+// Deliberately uses the *head* block's decorated metadata: Frontier's
+// `Ethereum::Current*` keys and types are stable across runtime versions,
+// while `block.meta` on a historical block triggers a per-block
+// `Metadata_metadata` runtime call — which loads and pins the multi-MB
+// `:code` wasm blob for every scanned block. An eth_getLogs walk over a
+// couple thousand blocks OOMs the process that way (issue #7/#8).
 async function readEthBlockState(block: any): Promise<{
   statuses: any[]
   receipts: any[] | null
   ethBlock: any | null
 } | null> {
-  const meta = await block.meta
+  const meta = await block.chain.head.meta
   const ethQ = (meta.query as any)?.ethereum
   if (!ethQ) return null
-  const statusVec: any = await readEthStorageAtBlock(block, ethQ.currentTransactionStatuses)
+  const statusVec: any = await readEthStorageAtBlock(meta, block, ethQ.currentTransactionStatuses)
   if (!statusVec) return { statuses: [], receipts: null, ethBlock: null }
-  const receiptVec: any = await readEthStorageAtBlock(block, ethQ.currentReceipts)
-  const ethBlock: any = await readEthStorageAtBlock(block, ethQ.currentBlock)
+  const receiptVec: any = await readEthStorageAtBlock(meta, block, ethQ.currentReceipts)
+  const ethBlock: any = await readEthStorageAtBlock(meta, block, ethQ.currentBlock)
   return {
     statuses: [...statusVec],
     receipts: receiptVec ? [...receiptVec] : null,
@@ -707,8 +713,6 @@ function matchesAddress(addr: string, filter?: string | string[]): boolean {
   return filter.some((f) => f.toLowerCase() === norm)
 }
 
-const GET_LOGS_MAX_RANGE = 1024
-
 export interface GetLogsParams {
   fromBlock?: string
   toBlock?: string
@@ -723,34 +727,48 @@ export interface GetLogsParams {
  * gather logs (Frontier exposes the same data in the receipts; statuses
  * carry the resolved blockHash/transactionHash we need to attach).
  *
- * Range is capped at GET_LOGS_MAX_RANGE blocks to keep things bounded —
+ * Range is capped at `chain.ethGetLogsMaxRange` blocks (configurable via
+ * `eth-get-logs-max-range`, 0 = unlimited) to keep things bounded —
  * indexers should batch their queries.
  */
 export const eth_getLogs: Handler<[GetLogsParams], any[]> = async (context, [params]) => {
   const filter = params ?? {}
-  let blocks: any[]
+  let from: number
+  let to: number
   if (filter.blockHash) {
     const b = await context.chain.getBlock(filter.blockHash as HexString)
     if (!b) return []
-    blocks = [b]
-  } else {
+    return collectLogs([b], filter)
+  }
+
+  {
     const headNum = context.chain.head.number
-    const from = filter.fromBlock !== undefined ? await resolveBlockNumber(context, filter.fromBlock) : headNum
-    const to = filter.toBlock !== undefined ? await resolveBlockNumber(context, filter.toBlock) : headNum
+    from = filter.fromBlock !== undefined ? await resolveBlockNumber(context, filter.fromBlock) : headNum
+    to = filter.toBlock !== undefined ? await resolveBlockNumber(context, filter.toBlock) : headNum
     if (to < from) return []
-    if (to - from + 1 > GET_LOGS_MAX_RANGE) {
+    const maxRange = context.chain.ethGetLogsMaxRange
+    if (maxRange > 0 && to - from + 1 > maxRange) {
       throw new ResponseError(
         -32005,
-        `eth_getLogs range too large: ${to - from + 1} > ${GET_LOGS_MAX_RANGE} blocks. Batch your query.`,
+        `eth_getLogs range too large: ${to - from + 1} > ${maxRange} blocks. Batch your query or raise eth-get-logs-max-range.`,
       )
-    }
-    blocks = []
-    for (let n = from; n <= to; n++) {
-      const b = await (context.chain as any).getBlockAt(n)
-      if (b) blocks.push(b)
     }
   }
 
+  // Fetch and scan one block at a time — holding the whole range's Block
+  // objects alive for the duration of the scan pins their storage/meta and
+  // can exhaust memory on wide ranges.
+  const out: any[] = []
+  for (let n = from; n <= to; n++) {
+    const b = await (context.chain as any).getBlockAt(n)
+    if (!b) continue
+    out.push(...(await collectLogs([b], filter)))
+  }
+  return out
+}
+
+// Gather matching logs from the given blocks' Frontier transaction statuses.
+async function collectLogs(blocks: any[], filter: GetLogsParams): Promise<any[]> {
   const out: any[] = []
   for (const block of blocks) {
     const state = await readEthBlockState(block)

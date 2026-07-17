@@ -1,5 +1,6 @@
 import type { HexString } from '@polkadot/util/types'
 import _ from 'lodash'
+import { LRUCache } from 'lru-cache'
 
 import type { Api } from '../api.js'
 import type { Database } from '../database.js'
@@ -10,6 +11,27 @@ import KeyCache from '../utils/key-cache.js'
 const logger = defaultLogger.child({ name: 'layer' })
 
 const BATCH_SIZE = 1000
+
+// Sentinel for "key exists upstream but has no value" — real values are 0x-hex.
+const MISSING = '\x00missing'
+
+// Shared, bounded cache of remotely-fetched storage values across all
+// RemoteStorageLayer instances, keyed by block hash + storage key (values at a
+// given block are immutable). Keeps hot keys warm across blocks without a db
+// while eviction keeps the footprint fixed — unlike the per-layer read caches,
+// which are dropped once a block falls behind head.
+//
+// Sized via CHOPSTICKS_STORAGE_CACHE_MB (default 128). An env var rather than
+// a config key because the cache is process-global — one YAML per chain in
+// multi-chain (XCM) setups would fight over it.
+const storageCacheMB = Number((globalThis as any)?.process?.env?.CHOPSTICKS_STORAGE_CACHE_MB) || 128
+const remoteValueCache = new LRUCache<string, string>({
+  // ~4k entries per MB — maxSize (bytes-ish) is the real bound, this just
+  // caps bookkeeping overhead for pathologically tiny values
+  max: storageCacheMB * 4096,
+  maxSize: storageCacheMB * 1024 * 1024,
+  sizeCalculation: (value) => value.length + 64,
+})
 
 export enum StorageValueKind {
   Deleted = 'Deleted',
@@ -60,9 +82,16 @@ export class RemoteStorageLayer implements StorageLayerProvider {
   }
 
   async get(key: string, _cache: boolean): Promise<StorageValue> {
+    const cacheKey = `${this.#at}:${key}`
+    const cached = remoteValueCache.get(cacheKey)
+    if (cached !== undefined) {
+      return cached === MISSING ? undefined : cached
+    }
+
     if (this.#db) {
       const res = await this.#db.queryStorage(this.#at as HexString, key as HexString)
       if (res) {
+        remoteValueCache.set(cacheKey, res.value ?? MISSING)
         return res.value ?? undefined
       }
     }
@@ -75,6 +104,7 @@ export class RemoteStorageLayer implements StorageLayerProvider {
       .getStorage(key, this.#at)
       .then((data) => {
         this.#db?.saveStorage(this.#at as HexString, key as HexString, data)
+        remoteValueCache.set(cacheKey, data ?? MISSING)
         return data ?? undefined
       })
       .finally(() => {
@@ -86,9 +116,18 @@ export class RemoteStorageLayer implements StorageLayerProvider {
 
   async getMany(keys: string[], _cache: boolean): Promise<StorageValue[]> {
     const result: StorageValue[] = []
-    let pending = keys.map((key, idx) => ({ key, idx }))
+    let pending: Array<{ key: string; idx: number }> = []
 
-    if (this.#db) {
+    keys.forEach((key, idx) => {
+      const cached = remoteValueCache.get(`${this.#at}:${key}`)
+      if (cached !== undefined) {
+        result[idx] = cached === MISSING ? undefined : cached
+      } else {
+        pending.push({ key, idx })
+      }
+    })
+
+    if (this.#db && pending.length) {
       const results = await Promise.all(
         pending.map(({ key }) => this.#db!.queryStorage(this.#at as HexString, key as HexString)),
       )
@@ -97,9 +136,10 @@ export class RemoteStorageLayer implements StorageLayerProvider {
       pending = []
       results.forEach((res, idx) => {
         if (res) {
-          result[idx] = res.value ?? undefined
+          result[oldPending[idx].idx] = res.value ?? undefined
+          remoteValueCache.set(`${this.#at}:${oldPending[idx].key}`, res.value ?? MISSING)
         } else {
-          pending.push({ key: oldPending[idx].key, idx })
+          pending.push(oldPending[idx])
         }
       })
     }
@@ -113,6 +153,7 @@ export class RemoteStorageLayer implements StorageLayerProvider {
       )
       data.forEach(([, res], idx) => {
         result[pending[idx].idx] = res ?? undefined
+        remoteValueCache.set(`${this.#at}:${pending[idx].key}`, res ?? MISSING)
       })
 
       if (this.#db?.saveStorageBatch) {
@@ -229,7 +270,15 @@ export class RemoteStorageLayer implements StorageLayerProvider {
 }
 
 export class StorageLayer implements StorageLayerProvider {
+  /** Writes applied to this layer — the block's actual diff. */
   readonly #store: Map<string, StorageValue | Promise<StorageValue>> = new Map()
+  /**
+   * Read-through cache of values resolved from parent layers. Kept separate
+   * from `#store` so cached reads never end up in {@link mergeInto} output
+   * (block diffs stay honest) and can be dropped via {@link clearReadCache}
+   * without losing writes.
+   */
+  readonly #readCache: Map<string, StorageValue | Promise<StorageValue>> = new Map()
   readonly #keys: string[] = []
   readonly #deletedPrefix: string[] = []
   #parent?: StorageLayerProvider
@@ -276,6 +325,10 @@ export class StorageLayer implements StorageLayerProvider {
       return this.#store.get(key)
     }
 
+    if (this.#readCache.has(key)) {
+      return this.#readCache.get(key)
+    }
+
     if (this.#deletedPrefix.some((dp) => key.startsWith(dp))) {
       return StorageValueKind.Deleted
     }
@@ -283,7 +336,7 @@ export class StorageLayer implements StorageLayerProvider {
     if (this.#parent) {
       const val = this.#parent.get(key, false)
       if (cache) {
-        this.#store.set(key, val)
+        this.#readCache.set(key, val)
       }
       return val
     }
@@ -298,6 +351,8 @@ export class StorageLayer implements StorageLayerProvider {
     const preloadedPromises = keys.map(async (key, idx) => {
       if (this.#store.has(key)) {
         result[idx] = await this.#store.get(key)
+      } else if (this.#readCache.has(key)) {
+        result[idx] = await this.#readCache.get(key)
       } else if (this.#deletedPrefix.some((dp) => key.startsWith(dp))) {
         result[idx] = StorageValueKind.Deleted
       } else {
@@ -312,7 +367,7 @@ export class StorageLayer implements StorageLayerProvider {
       )
       vals.forEach((val, idx) => {
         if (cache) {
-          this.#store.set(pending[idx].key, val)
+          this.#readCache.set(pending[idx].key, val)
         }
         result[pending[idx].idx] = val
       })
@@ -322,7 +377,16 @@ export class StorageLayer implements StorageLayerProvider {
     return result
   }
 
+  /**
+   * Drop read-through cache entries. Writes are untouched. Called when the
+   * owning block falls behind head so cached reads don't pin memory forever.
+   */
+  clearReadCache(): void {
+    this.#readCache.clear()
+  }
+
   set(key: string, value: StorageValue): void {
+    this.#readCache.delete(key)
     switch (value) {
       case StorageValueKind.Deleted:
         this.#store.set(key, StorageValueKind.Deleted)
@@ -330,6 +394,11 @@ export class StorageLayer implements StorageLayerProvider {
         break
       case StorageValueKind.DeletedPrefix:
         this.#deletedPrefix.push(key)
+        for (const k of this.#readCache.keys()) {
+          if (k.startsWith(key)) {
+            this.#readCache.delete(k)
+          }
+        }
         for (const k of this.#keys) {
           if (k.startsWith(key)) {
             this.#store.set(k, StorageValueKind.Deleted)

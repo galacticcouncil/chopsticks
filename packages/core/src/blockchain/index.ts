@@ -1,5 +1,7 @@
 import { Metadata, TypeRegistry } from '@polkadot/types'
 import type { ExtDef } from '@polkadot/types/extrinsic/signedExtensions/types'
+import { expandMetadata } from '@polkadot/types/metadata'
+import type { DecoratedMeta } from '@polkadot/types/metadata/decorate/types'
 import type { ApplyExtrinsicResult, ChainProperties, Header } from '@polkadot/types/interfaces'
 import type { TransactionValidity } from '@polkadot/types/interfaces/txqueue'
 import type { RegisteredTypes } from '@polkadot/types/types'
@@ -57,6 +59,8 @@ export interface Options {
   processQueuedMessages?: boolean
   /** Whether to save blocks to db */
   saveBlocks?: boolean
+  /** Max eth_getLogs block range. 0 means unlimited. Default 10_000. */
+  ethGetLogsMaxRange?: number
 }
 
 /**
@@ -110,6 +114,8 @@ export class Blockchain {
   readonly #maxMemoryBlockCount: number
   readonly processQueuedMessages: boolean = true
   readonly saveBlocks: boolean
+  /** Max eth_getLogs block range. 0 means unlimited. */
+  readonly ethGetLogsMaxRange: number
 
   // first arg is used as cache key
   readonly #registryBuilder = _.memoize(
@@ -132,6 +138,16 @@ export class Blockchain {
     },
   )
 
+  // first arg is used as cache key. Decorating metadata (expandMetadata) costs
+  // several MB of objects per call — doing it per Block instead of per runtime
+  // is one of the ways a long-running chain used to run out of memory (#7).
+  readonly #metaBuilder = _.memoize(
+    async (_cacheKey: string, metadata: HexString, version: RuntimeVersion): Promise<DecoratedMeta> => {
+      const registry = await this.buildRegistry(metadata, version)
+      return expandMetadata(registry, new Metadata(registry, metadata))
+    },
+  )
+
   /**
    * @param options - Options for instantiating the blockchain
    */
@@ -149,6 +165,7 @@ export class Blockchain {
     maxMemoryBlockCount = 500,
     processQueuedMessages = true,
     saveBlocks = true,
+    ethGetLogsMaxRange = 10_000,
   }: Options) {
     this.api = api
     this.db = db
@@ -172,6 +189,7 @@ export class Blockchain {
     this.#maxMemoryBlockCount = maxMemoryBlockCount
     this.processQueuedMessages = processQueuedMessages
     this.saveBlocks = saveBlocks
+    this.ethGetLogsMaxRange = ethGetLogsMaxRange
   }
 
   #registerBlock(block: Block) {
@@ -206,6 +224,11 @@ export class Blockchain {
   async buildRegistry(metadata: HexString, version: RuntimeVersion) {
     const cacheKey = `${xxhashAsHex(metadata, 256)}-${version.specVersion}`
     return this.#registryBuilder(cacheKey, metadata, version)
+  }
+
+  async buildMeta(metadata: HexString, version: RuntimeVersion) {
+    const cacheKey = `${xxhashAsHex(metadata, 256)}-${version.specVersion}`
+    return this.#metaBuilder(cacheKey, metadata, version)
   }
 
   async saveBlockToDB(block: Block) {
@@ -358,6 +381,16 @@ export class Blockchain {
     )
     this.#head = block
     this.#registerBlock(block)
+    // Every block's top storage layer caches all keys read while it serves
+    // as head; left alone those caches pin the whole read working-set per
+    // block forever (galacticcouncil/chopsticks#7). Keep the new head and
+    // its parent warm (misses at head resolve through the parent's cache),
+    // drop the rest — only cached reads are dropped, never block diffs.
+    for (const b of this.#blocksByHash.values()) {
+      if (b.number < block.number - 1) {
+        b.clearStorageReadCache()
+      }
+    }
     await this.headState.setHead(block)
 
     if (this.offchainWorker) {

@@ -41,6 +41,14 @@ export class HeadState {
 
   unsubscribeStorage(id: string) {
     delete this.#storageListeners[id]
+    // prune tracked values for keys no other subscription watches
+    const watched = new Set<string>()
+    for (const [keys] of Object.values(this.#storageListeners)) {
+      for (const key of keys) watched.add(key)
+    }
+    for (const key of Object.keys(this.#oldValues)) {
+      if (!watched.has(key)) delete this.#oldValues[key]
+    }
   }
 
   async setHead(head: Block) {
@@ -84,8 +92,14 @@ export class HeadState {
       }
     }
 
-    for (const [key, value] of Object.entries(newValues)) {
-      this.#oldValues[key] = value
+    // Only retain values for keys someone actually watches — merging every
+    // block's whole diff here grows without bound on a long-running chain
+    // (galacticcouncil/chopsticks#7). Newly subscribed keys are seeded by
+    // subscribeStorage itself.
+    for (const key of watchedKeys) {
+      if (newValues[key] !== undefined) {
+        this.#oldValues[key] = newValues[key]
+      }
     }
   }
 }

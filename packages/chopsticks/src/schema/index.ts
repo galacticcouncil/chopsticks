@@ -86,6 +86,12 @@ export const configSchema = z.object({
     })
     .optional(),
   'rpc-timeout': z.number({ description: 'RPC timeout in milliseconds' }).optional(),
+  'eth-get-logs-max-range': z
+    .number({
+      description: 'Max eth_getLogs block range. 0 means unlimited. Default 10000.',
+    })
+    .min(0)
+    .optional(),
 })
 
 export type Config = z.infer<typeof configSchema>
